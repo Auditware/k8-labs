@@ -5,9 +5,7 @@
   <em>Break into a disposable cluster, escalate to root, and watch an eBPF sensor catch you do it.</em>
 </p>
 
-<p align="center">
-  <img src="docs/assets/hero.svg" alt="K8 Labs - hands-on Kubernetes attack and defense" width="100%"/>
-</p>
+https://github.com/user-attachments/assets/f283825d-731a-4d13-a253-1578f2176e5d
 
 <p align="center">
   <img alt="labs" src="https://img.shields.io/badge/labs-20-388bfd?style=flat-square">
