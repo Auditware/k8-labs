@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/f283825d-731a-4d13-a253-1578f2176e5d
   <img alt="sensor" src="https://img.shields.io/badge/sensor-eBPF%2FTetragon-d29922?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
   <a href="https://x.com/audit_wizard/status/2089453014138360243"><img alt="bug bounty: no RCE found" src="https://img.shields.io/badge/bug%20bounty-no%20RCE%20found-2ea44f?style=flat-square"></a>
-  <a href="https://x.com/audit_wizard/status/2089453014138360243"><img alt="isolation audited" src="https://img.shields.io/badge/isolation-audited-2ea44f?style=flat-square"></a>
+  <a href="https://x.com/audit_wizard/status/2089453014138360243"><img alt="security audited" src="https://img.shields.io/badge/security-audited-2ea44f?style=flat-square"></a>
 </p>
 
 <p align="center">
