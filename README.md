@@ -15,6 +15,7 @@
   <img alt="isolation" src="https://img.shields.io/badge/isolation-Kata%2FFirecracker-3fb950?style=flat-square">
   <img alt="sensor" src="https://img.shields.io/badge/sensor-eBPF%2FTetragon-d29922?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
+  <a href="https://x.com/audit_wizard/status/2089453014138360243"><img alt="bug bounty: no RCE found" src="https://img.shields.io/badge/bug%20bounty-no%20RCE%20found-2ea44f?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -188,6 +189,12 @@ with a budget single-box option that fits a ~$70/month budget. Full guide and Te
 <br/>
 
 <h2 align="center">Security</h2>
+
+<p align="center">
+The isolation has been <b>tested in public</b>: a bug bounty was offered for escaping a lab's microVM to the host,
+and <b>no RCE or container escape was found</b> -
+<a href="https://x.com/audit_wizard/status/2089453014138360243">read the announcement</a>.
+</p>
 
 <p align="center">
 Every lab ships with <b>intentional vulnerabilities</b> - that is the point. They only ever run inside a disposable,<br/>
