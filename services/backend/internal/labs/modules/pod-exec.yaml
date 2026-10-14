@@ -1,0 +1,173 @@
+# pod-exec - lateral movement by execing into a privileged pod (RBAC).
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev`, holding `pods/exec` in the `ops`
+# namespace but no read access anywhere. A second pod in `ops` - `ci-runner` -
+# runs as a service account that CAN read the flag Secret in `production`. The
+# student execs into ci-runner and uses its mounted token to read the flag.
+#
+# The lesson: `exec` does not just run a command - it drops you inside the
+# target with the target's identity, filesystem, and mounted service-account
+# token. Granting `pods/exec` on a namespace hands out every identity that runs
+# there. What an EDR should observe: a dev-namespace identity opening an exec
+# stream into an ops pod, then that pod's token reading a production Secret.
+#
+# No new image (both pods use the baked foothold), no secrets: same nested shape
+# as ns-escape. The flag is bait (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+# The objective. Only the ci service account (below) can read it; the foothold
+# cannot.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{pods_exec_inherits_the_targets_service_account}"
+  note: "You read this with ci-runner's token, not your own - exec handed you its identity."
+---
+# The foothold's identity: it can exec into ops pods and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-exec
+  namespace: dev
+---
+# The victim pod's identity: a CI runner account that legitimately reads
+# production secrets as part of its job.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci
+  namespace: ops
+---
+# PLANTED FLAW: the foothold is granted pods/exec (plus get/list to find
+# targets) in the ops namespace. `exec` is the "kubectl exec" subresource; it is
+# created, not gotten, so the verb that matters is `create` on `pods/exec`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-execer
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+# Bound to sa-exec, but only within ops (a RoleBinding, so the reach is scoped
+# to this one namespace - the exec grant itself is the whole flaw, not its
+# scope).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sa-exec-can-exec-ops
+  namespace: ops
+subjects:
+  - kind: ServiceAccount
+    name: sa-exec
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: pod-execer
+  apiGroup: rbac.authorization.k8s.io
+---
+# The privileged identity's power: read secrets in production. This is a
+# legitimate grant for ci - the flaw is not that ci is powerful, it is that the
+# foothold can step into ci's pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prod-secret-reader
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-reads-prod-secrets
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: ci
+    namespace: ops
+roleRef:
+  kind: Role
+  name: prod-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches. Runs as sa-exec with its
+# token mounted, ships kubectl (the baked foothold image).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: pod-exec
+  serviceAccountName: sa-exec
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# The victim: a CI runner pod in ops, running as the ci service account with its
+# token mounted. The student execs into this pod to inherit ci's identity. Uses
+# the same baked foothold image, so no new image is needed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ci-runner
+  namespace: ops
+  labels:
+    app: ci-runner
+spec:
+  hostname: ci-runner
+  serviceAccountName: ci
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

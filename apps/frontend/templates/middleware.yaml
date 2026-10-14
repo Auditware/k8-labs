@@ -1,0 +1,44 @@
+# Prod security headers for the SPA. Self-contained in this chart (own name) so
+# there's no cross-chart "missing middleware -> Traefik 500" race. Gated by
+# traefikMiddleware.enabled; enabled in prod via the ArgoCD Application.
+{{- if .Values.traefikMiddleware.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "frontend.fullname" . }}-security-headers
+  labels:
+    {{- include "frontend.labels" . | nindent 4 }}
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    customFrameOptionsValue: SAMEORIGIN
+    contentTypeNosniff: true
+    referrerPolicy: strict-origin-when-cross-origin
+    # Permissions-Policy: deny every powerful feature the app never uses.
+    permissionsPolicy: >-
+      accelerometer=(), autoplay=(), camera=(), display-capture=(),
+      encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(),
+      magnetometer=(), microphone=(), midi=(), payment=(),
+      picture-in-picture=(), usb=(), xr-spatial-tracking=()
+    # CSP + the last cross-origin isolation headers. ENFORCED (was shipped
+    # report-only first and verified clean on prod across load / login / lab
+    # terminal+topology / PostHog with zero violations, then flipped to enforce
+    # by renaming the header from Content-Security-Policy-Report-Only).
+    # Derived from what the app actually loads:
+    #   script-src  self + us-assets (PostHog lazy-loads recorder/surveys);
+    #               the built index.html has NO inline scripts, so no
+    #               'unsafe-inline'/'unsafe-eval'.
+    #   style-src   'unsafe-inline' is REQUIRED: topologyRenderer injects a
+    #               <style> element and React uses inline style attributes.
+    #   connect-src self covers same-origin API + wss terminal/defender;
+    #               PostHog ingest + assets added explicitly.
+    #   worker-src  blob: for PostHog session-replay's worker.
+    # Set via customResponseHeaders so it's Traefik-version-agnostic (the
+    # dedicated contentSecurityPolicyReportOnly field is v3-only).
+    customResponseHeaders:
+      Content-Security-Policy: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; frame-src 'self'; script-src 'self' https://us-assets.i.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://us.i.posthog.com https://us-assets.i.posthog.com; worker-src 'self' blob:; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests"
+      Cross-Origin-Opener-Policy: "same-origin-allow-popups"
+      Cross-Origin-Resource-Policy: "same-origin"
+{{- end }}

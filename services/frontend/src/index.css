@@ -1,0 +1,359 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* The app is a fixed h-screen shell that scrolls inside its own panes, so
+       there is nothing to gain from the document rubber-banding - it only
+       dragged past the shell and revealed the root behind it. Kill the
+       document-level overscroll bounce outright, and (belt-and-suspenders)
+       paint the root the app's slate-950 + color-scheme: dark so any residual
+       gutter or native scrollbar renders dark, not the browser default white. */
+    overscroll-behavior: none;
+    @apply bg-slate-950 text-slate-100;
+    color-scheme: dark;
+  }
+  body {
+    @apply leading-relaxed;
+  }
+}
+
+/* --- Course player (components/course). Two things Tailwind can't express:
+   styling HTML produced by the backend's restricted Markdown renderer (there
+   are no class names to attach utilities to), and the diagram's assembly
+   animation, which is what makes a drawing read as an idea being built rather
+   than a picture appearing. --- */
+
+/* Copy/run affordances the CoursePlayer hangs off a runnable-command chip
+   (`$ cmd` -> span.k.cmd). Small, muted, and inline right after the chip so
+   they read as "do something with this command" without stealing the line. */
+.cmd-actions {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 3px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.cmd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  width: 20px;
+  border-radius: 5px;
+  color: rgb(100 116 139); /* slate-500 */
+  transition: color 0.12s, background-color 0.12s;
+}
+.cmd-btn:hover {
+  color: rgb(226 232 240); /* slate-200 */
+  background: rgb(51 65 85 / 0.6); /* slate-700/60 */
+}
+.cmd-btn.done {
+  color: rgb(52 211 153); /* emerald-400 */
+}
+/* Waiting for the command to reach the shell (queued while the lab provisions).
+   A deliberate "working" colour, not the hover tint, and no hover feedback while
+   it's inert. */
+.cmd-btn.busy {
+  color: rgb(96 165 250); /* blue-400 */
+}
+.cmd-btn:disabled {
+  cursor: default;
+}
+.cmd-btn:disabled:hover {
+  background: transparent;
+}
+.cd-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cd-spin 0.7s linear infinite;
+}
+@keyframes cd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.cd-prose p {
+  margin: 0 0 0.75em;
+}
+.cd-prose p:last-child {
+  margin-bottom: 0;
+}
+.cd-prose b {
+  @apply font-semibold text-slate-100;
+}
+/* The term chip: the marker an author writes as `backticks`, and the same one
+   the cold-term lint reads to decide whether a word was ever introduced.
+   Deliberately NOT scoped under .cd-prose - the same marker appears in quiz
+   questions and answer options, which are not prose blocks, and a term that
+   styles itself in one place and not another reads as a rendering bug. */
+.k {
+  @apply rounded bg-blue-500/15 px-1.5 py-0.5 font-mono text-15 text-blue-300;
+  white-space: nowrap;
+}
+/* A runnable-command chip can be a whole command line (with a pipe, a jsonpath),
+   too long for the narrow course pane - let it wrap rather than overflow. Term
+   chips stay nowrap so a single word never breaks mid-token. */
+.k.cmd {
+  white-space: normal;
+}
+
+/* Spec / manifest block (course/prose.go). A plain ```yaml fence is a bare
+   pre.spec; a fence tagged with a filename (or several in a row) becomes a
+   .spec-group editor window with tabs. Both share the line-numbered,
+   syntax-highlighted body. A wide manifest scrolls on its own axis so it never
+   forces the page sideways. */
+
+/* --- editor window chrome (filenamed groups only) --- */
+.cd-prose .spec-group {
+  @apply my-3 overflow-hidden rounded-xl border border-slate-700/70 bg-slate-900/60;
+}
+.cd-prose .spec-bar {
+  @apply flex h-9 items-stretch gap-3 border-b border-slate-700/70 bg-slate-950/50 pl-4;
+}
+.cd-prose .spec-dots {
+  @apply flex items-center gap-1.5;
+}
+.cd-prose .spec-dots i {
+  @apply block h-2.5 w-2.5 rounded-full;
+}
+.cd-prose .spec-dots i:nth-child(1) { background: #ef5f57; }
+.cd-prose .spec-dots i:nth-child(2) { background: #febc2e; }
+.cd-prose .spec-dots i:nth-child(3) { background: #28c840; }
+
+.cd-prose .spec-tabs {
+  @apply flex items-stretch overflow-x-auto;
+}
+.cd-prose .spec-tab {
+  @apply inline-flex items-center gap-2 whitespace-nowrap border-r border-slate-700/70 px-3.5 font-mono text-[12px] text-slate-500 transition-colors;
+  border-top: 2px solid transparent;
+  cursor: pointer;
+}
+.cd-prose .spec-tab:first-child {
+  @apply border-l border-slate-700/70;
+}
+.cd-prose .spec-tab:hover {
+  @apply bg-white/5 text-slate-300;
+}
+.cd-prose .spec-tab.is-active {
+  @apply bg-slate-900/60 text-slate-200;
+  border-top-color: theme(colors.blue.500);
+}
+.cd-prose .spec-tab-ext { @apply text-slate-600; }
+.cd-prose .spec-file-icon { @apply shrink-0 opacity-70; }
+.cd-prose .spec-tab.is-active .spec-file-icon { @apply opacity-100; }
+.cd-prose .spec-tab-dot { @apply h-1.5 w-1.5 rounded-full; }
+.cd-prose .spec-tab-dot.bad { background: theme(colors.rose.400); box-shadow: 0 0 0 3px rgb(251 113 133 / 0.14); }
+.cd-prose .spec-tab-dot.good { background: theme(colors.emerald.400); box-shadow: 0 0 0 3px rgb(52 211 153 / 0.14); }
+
+.cd-prose .spec-pane { @apply overflow-x-auto; }
+.cd-prose .spec-pane:not(.is-active) { @apply hidden; }
+/* Inside a window the pre supplies no border/rounding of its own. */
+.cd-prose .spec-group pre.spec {
+  @apply my-0 rounded-none border-0 bg-transparent;
+}
+
+/* --- the body: a bare pre.spec (plain) or the pre inside a pane --- */
+.cd-prose pre.spec {
+  @apply my-3 overflow-x-auto rounded-lg border border-slate-700/70 bg-slate-900/60 py-3 pr-5;
+  border-left-width: 3px;
+  @apply border-l-amber-500/70;
+  counter-reset: specln;
+}
+.cd-prose pre.spec code {
+  @apply block font-mono text-13 leading-relaxed text-slate-200;
+  width: max-content;
+  min-width: 100%;
+}
+/* one source line + its number, drawn in a left gutter via a CSS counter. The
+   number is sticky so it stays put while a wide line scrolls under it. */
+.cd-prose .spec-line {
+  @apply block;
+  white-space: pre;
+  padding-left: 3.6rem;
+}
+.cd-prose .spec-line::before {
+  counter-increment: specln;
+  content: counter(specln);
+  @apply text-slate-600;
+  position: sticky;
+  left: 0;
+  display: inline-block;
+  width: 2.4rem;
+  margin-left: -3.6rem;
+  padding-right: 0.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  background: rgb(15 23 42 / 0.6);
+}
+.cd-prose .spec-line.is-danger {
+  background: linear-gradient(90deg, rgb(251 113 133 / 0.10), rgb(251 113 133 / 0) 60%);
+}
+.cd-prose .spec-line.is-danger::before { @apply font-semibold text-rose-400; }
+.cd-prose .spec-line.is-good {
+  background: linear-gradient(90deg, rgb(52 211 153 / 0.10), rgb(52 211 153 / 0) 60%);
+}
+.cd-prose .spec-line.is-good::before { @apply font-semibold text-emerald-400; }
+
+/* inline token colours emitted by highlightSpec */
+.cd-prose pre.spec .spec-key { @apply text-sky-300; }
+.cd-prose pre.spec .spec-str { @apply text-emerald-300; }
+.cd-prose pre.spec .spec-comment { @apply text-slate-500; }
+.cd-prose pre.spec .spec-hot { @apply text-amber-200; }
+.cd-prose pre.spec .spec-danger { @apply font-semibold text-rose-400; }
+.cd-prose pre.spec .spec-good { @apply font-semibold text-emerald-400; }
+
+.cd-stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.cd-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cd-pop 0.5s cubic-bezier(0.2, 0.85, 0.3, 1) both;
+}
+.cd-fade {
+  animation: cd-fade 0.55s ease both;
+}
+.cd-draw {
+  stroke-dasharray: 400;
+  stroke-dashoffset: 400;
+  animation: cd-draw 0.9s ease forwards;
+}
+/* Terminal status dot while a lab is still provisioning: a calm fade between
+   slate (idle) and emerald (ready), so "in progress" reads as not-yet-green
+   rather than a solid green that lies about readiness. */
+.dot-progress {
+  animation: dot-progress 1.6s ease-in-out infinite;
+}
+@keyframes dot-progress {
+  0%,
+  100% {
+    background-color: #475569;
+  }
+  50% {
+    background-color: #34d399;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-progress {
+    animation: none;
+    background-color: #64748b;
+  }
+}
+@keyframes cd-pop {
+  from {
+    transform: scale(0.55);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes cd-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes cd-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* Someone who asked the OS for less motion should get a static diagram, not a
+   slightly calmer one - the animation is decoration, the drawing is the
+   content. */
+@media (prefers-reduced-motion: reduce) {
+  .cd-pop,
+  .cd-fade,
+  .cd-draw {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+    opacity: 1 !important;
+  }
+}
+
+/* Landing page terminal caret (pages/Landing.tsx). A real shell's block cursor
+   blinks; step-end gives the hard on/off, not a fade. Stilled under
+   reduced-motion - the caret stays solid rather than pulsing. */
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.caret-blink {
+  animation: caret-blink 1s step-end infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .caret-blink {
+    animation: none !important;
+  }
+}
+
+/* --- Landing density (pages/Landing.tsx). The scroll-deck is composed for tall
+   wide monitors; on a regular laptop it reads too large - the slide-1 hero (mock
+   + heading + CTA) overflows the viewport and pushes the CTA below the fold.
+   The deck is a fixed-height snap scroller with a fixed <canvas> behind it, so
+   the page itself can't be `zoom`ed - that would shrink the 100vh slides and the
+   background with it. Instead each content block (nav + every slide) carries
+   .landing-zoom and is scaled down. Overflow is a HEIGHT problem (a 1366x768 and
+   a 1440x900 are both "laptops" but need different scaling), so the knob is keyed
+   on viewport height, not width. min-width:1024 excludes phones/tablets (their
+   own single-column layout stays 1:1); tall desktops (>1040px) also stay 1:1.
+   Thresholds cascade - the smallest matching max-height wins (source order). One
+   knob, --landing-zoom, drives it. Verified fitting at 1366x768 / 1536x864 /
+   1440x900 (see the trimmed hero padding in Landing.tsx slide 1). --- */
+.landing-zoom {
+  zoom: var(--landing-zoom, 1);
+}
+@media (min-width: 1024px) and (max-height: 1040px) {
+  :root {
+    --landing-zoom: 0.82;
+  }
+}
+@media (min-width: 1024px) and (max-height: 930px) {
+  :root {
+    --landing-zoom: 0.76;
+  }
+}
+@media (min-width: 1024px) and (max-height: 820px) {
+  :root {
+    --landing-zoom: 0.66;
+  }
+}
+
+/* Footer accessibility widget (components/AccessibilityWidget.tsx), ported from
+   our shared component set. The high-contrast toggle applies this filter to the document
+   root; the panel slides up on open. */
+.a11y-high-contrast {
+  filter: contrast(1.5) brightness(1.1);
+}
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.18s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-up {
+    animation: none !important;
+  }
+}

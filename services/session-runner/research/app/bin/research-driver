@@ -1,0 +1,89 @@
+#!/bin/sh
+# research-driver: list and load the admin-vetted kernel modules mounted into
+# this research session at /opt/drivers.
+#
+# These .ko files are ones the researcher selected on the lab's Drivers panel at
+# session start and an admin approved; the backend mounts them read-only as a
+# Secret (see docs/architecture/research-driver-catalog.md). Loading one is an
+# explicit act, exactly like the sample driver's load.sh - nothing auto-insmods.
+#
+#   research-driver ls              list mounted drivers + vermagic match
+#   research-driver load <name>     insmod one (real insmod error on mismatch)
+#   research-driver unload <name>   rmmod it by its in-kernel module name
+set -eu
+
+DIR=/opt/drivers
+
+usage() {
+	echo "usage: research-driver ls | load <name> | unload <name>" >&2
+	exit 2
+}
+
+have_drivers() {
+	ls "$DIR"/*.ko >/dev/null 2>&1
+}
+
+# find_ko resolves a user-supplied name to a mounted .ko path: a full path, an
+# exact <name>.ko, or the friendly prefix before the -<hash>.ko suffix.
+find_ko() {
+	want=$1
+	if [ -f "$want" ]; then echo "$want"; return 0; fi
+	if [ -f "$DIR/$want.ko" ]; then echo "$DIR/$want.ko"; return 0; fi
+	for f in "$DIR/$want"-*.ko; do
+		[ -f "$f" ] && { echo "$f"; return 0; }
+	done
+	return 1
+}
+
+cmd_ls() {
+	if ! have_drivers; then
+		echo "No drivers mounted. Pick drivers on the lab's Drivers panel before starting the session."
+		return 0
+	fi
+	running="$(uname -r)"
+	printf '%-28s %-6s %s\n' NAME MATCH VERMAGIC
+	for f in "$DIR"/*.ko; do
+		name=$(basename "$f" .ko)
+		vm=$(modinfo -F vermagic "$f" 2>/dev/null || echo "?")
+		# A module loads only if its vermagic leads with the running release.
+		case "$vm" in
+			"$running"*) match=yes ;;
+			*) match=NO ;;
+		esac
+		printf '%-28s %-6s %s\n' "$name" "$match" "$vm"
+	done
+	echo
+	echo "running kernel: $running"
+}
+
+cmd_load() {
+	[ $# -ge 1 ] || usage
+	f=$(find_ko "$1") || { echo "no such driver: $1 (try 'research-driver ls')" >&2; exit 1; }
+	echo "insmod $f"
+	# Let insmod's own error surface (vermagic mismatch, unknown symbol) rather
+	# than swallowing it - that message is the whole diagnostic.
+	insmod "$f"
+	echo "loaded $(basename "$f" .ko)."
+	echo "note: if this module registers a char/misc device, create its /dev node by hand"
+	echo "      (see /app/driver/load.sh for the mknod pattern - this lab's /dev has no udev)."
+}
+
+cmd_unload() {
+	[ $# -ge 1 ] || usage
+	f=$(find_ko "$1") || { echo "no such driver: $1" >&2; exit 1; }
+	# rmmod takes the in-kernel module name, which is modinfo's "name", not the
+	# mounted filename (which carries our -<hash> suffix).
+	name=$(modinfo -F name "$f" 2>/dev/null || basename "$f" .ko)
+	echo "rmmod $name"
+	rmmod "$name"
+}
+
+[ $# -ge 1 ] || usage
+sub=$1
+shift || true
+case "$sub" in
+	ls) cmd_ls "$@" ;;
+	load) cmd_load "$@" ;;
+	unload) cmd_unload "$@" ;;
+	*) usage ;;
+esac

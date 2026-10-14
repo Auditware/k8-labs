@@ -1,0 +1,46 @@
+# Local dev only - mirrors the shape of the real deployment (Postgres +
+# backend) without needing the Hetzner/k8s stack running. Not used by
+# ArgoCD/apps/ at all; that's the real cluster's job.
+#
+# Env values come from secrets/*.env (gitignored - copy from the .example
+# files next to them, or `git secret reveal` if already encrypted). Nothing
+# is hardcoded here on purpose: this file should look identical whether
+# your local values are dummy or real. See docs/architecture/environments.md.
+#
+# The frontend is deliberately NOT containerized here - run it natively
+# with `bun run dev` (services/frontend) for fast Vite HMR; it talks to
+# the backend below via the proxy in vite.config.ts.
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ./secrets/backend.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./services/backend
+    env_file:
+      - ./secrets/backend.env
+    # Localhost-only username/password login (see services/backend
+    # internal/api/devlogin.go). This compose file is local-dev only and is
+    # never used by ArgoCD/apps/, so enabling it here can't reach prod. Prod
+    # never sets DEV_LOGIN, so the route isn't even mounted there.
+    environment:
+      DEV_LOGIN: "1"
+    ports:
+      - "8080:8080"
+      - "7374:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

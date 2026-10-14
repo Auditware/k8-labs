@@ -1,0 +1,23 @@
+# RuntimeClass for the hardened kernel-driver research lab (driver-research-hard).
+# Same as kata-fc-research-dev, but the guest kernel is built with production
+# mitigations ON (KASLR, RANDOM_KMALLOC_CACHES, hardened freelist, CFI,
+# STATIC_USERMODEHELPER) - to prove whether a bug is still exploitable under real
+# cloud hardening. Selected when Module.Kernel == "research-hard". See
+# docs/architecture/kasan-research-lab.md.
+#
+# Prereqs on the labs node (by hand, like kata-fc-ebpf):
+#   - kata-fc working; the hardened research kernel installed under
+#     /opt/kata/share/kata-containers/.
+#   - a containerd handler "kata-fc-research-hard" whose configuration-fc-research-hard.toml
+#     points `kernel =` at that kernel; containerd restarted once.
+#   - "kata-fc-research-hard" added to allowedRuntimeClasses (apps/labs/values.yaml).
+#
+# No spec.overhead, same reasoning as the others. Grant-only; heaviest tier.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc-research-hard
+handler: kata-fc-research-hard
+scheduling:
+  nodeSelector:
+    k8labs.io/role: labs

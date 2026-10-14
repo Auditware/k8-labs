@@ -1,0 +1,114 @@
+# sa-impersonate - user/group impersonation escalation (RBAC).
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev`, running as a service account that holds
+# nothing but the `impersonate` verb, and must read a Secret in `production`
+# they have no direct permission to see.
+#
+# The planted flaw: a ClusterRole granting `impersonate` on users AND groups is
+# bound to the foothold's service account. `impersonate` is a wildcard to any
+# identity - and the `system:masters` group is hardwired into the API server to
+# bypass authorization entirely (rbac/authorizer's superuser short-circuit). So
+# an identity that can impersonate a group can name `system:masters` and read
+# anything, no matter how narrow its own rules are. This one grant is the whole
+# vulnerability. What an EDR should observe: an ImpersonateRequest naming a
+# privileged group on an otherwise-unprivileged identity.
+#
+# No new image, no secrets: same nested shape as ns-escape. The flag is bait
+# (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+# The namespace whose Secret the foothold has no direct route to.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+# The objective: read this from the dev foothold, which cannot read secrets
+# anywhere as itself.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{impersonate_a_group_to_become_system_masters}"
+  note: "Reading this as sa-imper means impersonate reached an identity it never should have."
+---
+# The foothold's identity. It is deliberately powerless on its own - it holds
+# the impersonate verb and nothing else, so a direct `get secret` fails and only
+# a borrowed identity succeeds.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-imper
+  namespace: dev
+---
+# PLANTED FLAW (1/2): a ClusterRole granting the `impersonate` verb on users and
+# groups. Impersonation is how the API server lets a trusted component act "as"
+# someone else (the front-proxy, `kubectl --as`); granting it to a workload
+# identity hands that workload the ability to become any user or group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: identity-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users", "groups"]
+    verbs: ["impersonate"]
+---
+# PLANTED FLAW (2/2): binding that ClusterRole to the foothold's service account.
+# The intent might have been "let this component impersonate a specific low-risk
+# user"; unrestricted `groups` impersonation means it can name `system:masters`,
+# the group the API server treats as superuser. One binding, total bypass.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: identity-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: sa-imper
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: identity-impersonator
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches (EntryNamespace/EntryPod
+# in the module registry). Runs as sa-imper with its token mounted, and ships
+# kubectl (the baked foothold image) so the student can enumerate and exploit.
+# Named deterministically ("foothold") so the terminal bridge can find it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  # Sets the shell's \h (prompt reads user@sa-impersonate). Cosmetic, distinct
+  # from the pod name so EntryPod / RBAC references stay put.
+  hostname: sa-impersonate
+  serviceAccountName: sa-imper
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      # The baked foothold image (services/session-runner/foothold) - preloaded
+      # into every nested cluster on boot, so Never (it's not on any registry).
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

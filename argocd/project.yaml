@@ -1,0 +1,52 @@
+# Scoped AppProject - deliberately not the default "default" AppProject,
+# which allows any repo/any destination/any resource kind. The principle:
+# scope with AppProjects, no blanket cluster-admin. Every
+# Application in argocd/applications/ references this project by name.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: k8labs
+  namespace: argocd
+spec:
+  description: K8 Labs - apps/** only, this repo only, this cluster only.
+
+  sourceRepos:
+    - https://github.com/Auditware/k8-labs.git
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: default
+    - server: https://kubernetes.default.svc
+      namespace: labs-runners
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+
+  # Cluster-scoped kinds actually used by apps/** - Namespace and ClusterRole
+  # (apps/labs), ClusterIssuer (apps/cert-manager), and the ValidatingAdmission
+  # Policy + binding that pin runner pods to a Kata RuntimeClass (apps/labs,
+  # requireKataRuntimeClass). Everything else cluster-scoped stays blocked; this
+  # is the tight side of least-privilege, since cluster-scoped resources aren't
+  # contained by the destination namespace allowlist above.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: cert-manager.io
+      kind: ClusterIssuer
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicy
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicyBinding
+
+  # Namespaced kinds: not enumerated as tightly as cluster-scoped ones above
+  # - apps/backend/postgres/labs/cert-manager between them already cover
+  # most common kinds (Deployment, Service, Ingress, ConfigMap, Secret,
+  # ServiceAccount, RoleBinding, NetworkPolicy, PersistentVolumeClaim,
+  # Certificate) and the destination allowlist above already bounds the
+  # blast radius to this app's own namespaces. Revisit if that changes.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

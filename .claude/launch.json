@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd services/frontend && exec bun run dev"],
+      "port": 7373,
+      "autoPort": false
+    },
+    {
+      "name": "backend",
+      "url": "http://localhost:7374"
+    }
+  ]
+}

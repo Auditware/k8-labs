@@ -1,0 +1,25 @@
+# issuer.type: "selfsigned" (local/k3d - no public domain to prove ownership
+# of) or "acme" (real environments - needs a reachable domain + DNS).
+# Same split pattern as apps/backend's vault.enabled.
+issuer:
+  type: selfsigned
+
+  # Only used when type: acme.
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ""
+    ingressClass: traefik
+    # solver: http01 (direct/grey-cloud) | dns01 (needed behind the Cloudflare
+    # proxy - HTTP-01 can't reach the origin when Cloudflare terminates TLS).
+    solver: http01
+    cloudflare:
+      # Name of a Secret in the cert-manager namespace holding the Cloudflare
+      # API token (Zone:DNS:Edit for the zone). Created out-of-band so the token
+      # never lands in git. Only used when solver=dns01.
+      apiTokenSecretName: ""
+      apiTokenSecretKey: api-token
+
+# Name every Ingress across apps/* should reference in its
+# cert-manager.io/cluster-issuer annotation - same issuer either way, only
+# what's behind it changes.
+clusterIssuerName: ca-issuer

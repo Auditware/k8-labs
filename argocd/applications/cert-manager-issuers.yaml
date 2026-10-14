@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-issuers
+  namespace: argocd
+  annotations:
+    # cert-manager controller is substrate (bootstrap.sh); these ClusterIssuers
+    # come before backend/frontend ingresses that reference them.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/cert-manager
+    # Self-signed origin cert: the site is behind the Cloudflare proxy in "Full"
+    # mode, where Cloudflare accepts any origin cert (public TLS to visitors is
+    # Cloudflare's own Universal SSL). Self-signed means no ACME/HTTP-01 (which
+    # can't reach the origin once it's firewalled to Cloudflare-only) and no
+    # renewal to manage. clusterIssuerName stays ca-issuer either way. The
+    # dns01/acme solver knobs remain in the chart if we ever want Full(Strict)
+    # + Let's Encrypt via a Cloudflare token.
+    helm:
+      parameters:
+        - name: issuer.type
+          value: selfsigned
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  # This one actually has no drift from what Tilt applies - the chart takes
+  # no --set overrides either way (see Tiltfile), so this Application is
+  # the closest thing here to a genuine apples-to-apples GitOps proof.
+  # Auto-sync (prod-only ArgoCD; see postgres.yaml for the full rationale).
+  # selfHeal reverts drift, prune off so nothing is auto-deleted. Deploys stay
+  # gated by the pin-bump commit.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

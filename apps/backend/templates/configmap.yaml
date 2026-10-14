@@ -1,0 +1,28 @@
+# Non-secret config only. DATABASE_USER/DATABASE_PASSWORD/JWT_SIGNING_KEY
+# are deliberately absent - see deployment.yaml's Vault Agent Injector
+# annotations for how those actually reach the pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backend.fullname" . }}-config
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.service.port | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  DATABASE_HOST: {{ .Values.config.databaseHost | quote }}
+  DATABASE_PORT: {{ .Values.config.databasePort | quote }}
+  DATABASE_NAME: {{ .Values.config.databaseName | quote }}
+  DATABASE_SSLMODE: {{ .Values.config.databaseSslmode | quote }}
+  LABS_RUNTIME_CLASS: {{ .Values.config.labsRuntimeClass | quote }}
+  LABS_RUNTIME_CLASS_EBPF: {{ .Values.config.labsRuntimeClassEbpf | quote }}
+  LABS_RUNTIME_CLASS_RESEARCH_DEV: {{ .Values.config.labsRuntimeClassResearchDev | quote }}
+  LABS_RUNTIME_CLASS_RESEARCH_HARD: {{ .Values.config.labsRuntimeClassResearchHard | quote }}
+  LABS_NODE_SELECTOR: {{ .Values.config.labsNodeSelector | quote }}
+  LABS_RUNNER_NAMESPACE: {{ .Values.config.labsRunnerNamespace | quote }}
+  LABS_RUNNER_IMAGE: {{ .Values.config.labsRunnerImage | quote }}
+  CORS_ORIGIN: {{ .Values.config.corsOrigin | quote }}
+  # LOCAL DEV ONLY: gates the localhost username/password login route (see
+  # services/backend internal/api/devlogin.go). "" = off, so the route is never
+  # mounted in prod; Tilt overrides to "1" for k3d, docker-compose sets it too.
+  DEV_LOGIN: {{ .Values.config.devLogin | default "" | quote }}

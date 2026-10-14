@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tetragon
+description: The TracingPolicyNamespaced resources Tetragon uses to catch host-kernel-visible credential transitions in the session-runner namespace - a possible microVM breakout indicator in prod (see templates/process-creds-changed.yaml for the runc-vs-Kata coverage difference). Tetragon itself is a cluster prerequisite installed the same way as Cilium (see docs/architecture/environments.md) - not managed by this chart, same reasoning as apps/cert-manager not subcharting cert-manager itself.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

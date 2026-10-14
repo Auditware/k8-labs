@@ -1,0 +1,44 @@
+# Least-privilege - the Backend's ServiceAccount can manage session-runner Pods
+# in the runner namespace and nothing else (no cluster-admin, ever).
+# This is what internal/labs/client.go's in-cluster client uses.
+#
+# pods/exec is the one unusual verb: fetching a session's nested kubeconfig is
+# `cat /output/kubeconfig` over exec (internal/labs/nested.go), and the terminal
+# bridge execs into the nested foothold the same way. No Services and no
+# NetworkPolicies - the backend dials the runner pod's IP directly.
+#
+# The wider `backend-lab-sessions` ClusterRole (pods + services + networkpolicies
+# across labs/labs-baseline) went away with the legacy single-pod shape - see
+# docs/architecture/lab-session-rewrite.md, F1. The backend can no longer create
+# NetworkPolicies anywhere.
+#
+# ClusterRole + RoleBinding rather than a plain Role: a RoleBinding referencing a
+# ClusterRole still only grants access within that one namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backend-runner-sessions
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-runner-sessions
+  namespace: {{ .Values.runnerNamespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.backend.serviceAccountName }}
+    namespace: {{ .Values.backend.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: backend-runner-sessions
+  apiGroup: rbac.authorization.k8s.io

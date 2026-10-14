@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend
+  namespace: argocd
+  annotations:
+    # After postgres, labs (namespace/RBAC), and the cert-manager issuer
+    # (wave 0) exist; Vault is substrate (bootstrap.sh), already up.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/backend
+    # Prod-only pull secret for the private GHCR image. Kept here (not in the
+    # chart's values.yaml) so local Tilt - which builds into the k3d registry
+    # and needs no pull secret - stays unaffected. The ghcr-pull secret itself
+    # is created out-of-band in the `default` namespace (holds the token, so
+    # never in git). See docs/self-hosting.md.
+    helm:
+      parameters:
+        - name: imagePullSecrets[0].name
+          value: ghcr-pull
+        # Pin to the exact CI build to deploy - see frontend.yaml for why a
+        # SHA tag (not :latest) is what actually rolls the pods. Bump to the
+        # :<git-sha> CI published for the commit you want live.
+        - name: image.tag
+          value: "56f20b9"
+        # The Postgres chart's Service is <release>-postgres = postgres-postgres
+        # in prod (ArgoCD release "postgres"); the chart default DATABASE_HOST
+        # assumes a bare "postgres" (local/Tilt naming). Point prod at the real
+        # Service name. Prod-only override; local Tilt keeps the default.
+        - name: config.databaseHost
+          value: postgres-postgres.default.svc.cluster.local
+        # Prod hardening: security-headers on all routes + IP-allowlist on the
+        # admin paths (/admin/*, /ui, /v1). CIDR is your admin IP; update if it
+        # changes (dynamic IP) or add the Cloudflare ranges if you proxy.
+        - name: traefikMiddleware.enabled
+          value: "true"
+        - name: traefikMiddleware.adminAllowCIDRs[0]
+          value: 94.159.142.233/32
+        # Behind Cloudflare: read the real visitor IP from X-Forwarded-For.
+        - name: traefikMiddleware.adminAllowIPDepth
+          value: "1"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  # Auto-sync (prod-only ArgoCD; see postgres.yaml for the full rationale).
+  # selfHeal reverts drift, prune off so nothing is auto-deleted. Deploys stay
+  # gated by the pin-bump commit. Note the app health sits at Progressing
+  # permanently - the Traefik hostPort Ingress has no LoadBalancer status to
+  # populate - so judge a roll by the Deployment/rollout, not the health string.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

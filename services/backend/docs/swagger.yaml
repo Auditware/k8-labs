@@ -1,0 +1,2241 @@
+basePath: /api/v1
+definitions:
+  accounts.APIKey:
+    properties:
+      createdAt:
+        type: string
+      expiresAt:
+        type: string
+      id:
+        type: string
+      lastUsedAt:
+        type: string
+      name:
+        type: string
+      prefix:
+        type: string
+      scopes:
+        items:
+          type: string
+        type: array
+    type: object
+  accounts.AdminUser:
+    properties:
+      blocked:
+        description: |-
+          Blocked users can't authenticate - checked at login (see
+          ErrUserBlocked) and re-checked on every request by requireAuth, for the
+          same reason Role is re-read from the DB: blocking must take effect
+          immediately, not whenever an already-issued token happens to expire.
+        type: boolean
+      completed:
+        description: |-
+          Completed is the module slugs this user has solved - captured and submitted
+          the flag for (lab_progress.completed_at IS NOT NULL, the same signal as
+          getProgress.complete). Non-nil like Grants, so it encodes as [] not null.
+          Lets the admin grant menu mark which labs a user has actually cleared,
+          distinct from which they can access. Independent of Grants: an admin (or a
+          grandfathered account) can have a completion without a current grant row.
+        items:
+          type: string
+        type: array
+      email:
+        type: string
+      entitled:
+        description: |-
+          Entitled is what the user can actually ACCESS: explicit Grants folded in
+          with the free progression unlocks (tier-0 ns-escape for everyone, plus each
+          tier the previous one unlocked). Distinct from Grants - a user with no grant
+          rows still has the free first lab - so the admin page counts Entitled, not
+          Grants, for "lab access"; otherwise everyone on the free tier reads as "No
+          labs". Non-nil like Grants, so it encodes as [] not null.
+        items:
+          type: string
+        type: array
+      grants:
+        items:
+          type: string
+        type: array
+      hasAvatar:
+        description: |-
+          HasAvatar is `avatar IS NOT NULL` - it lets any client that has the
+          current user (the whole frontend, via /auth/me) decide whether to show
+          the uploaded image at /users/{id}/avatar or fall back to an initial,
+          without a second round-trip to /profile. The image bytes are never put
+          on this struct; see accounts.GetProfile for the same NULL-check pattern.
+        type: boolean
+      id:
+        type: string
+      lastSolvedAt:
+        description: |-
+          LastSolvedAt is when this user most recently captured a flag
+          (MAX(lab_progress.completed_at)), nil for a user who has never solved one.
+          It is the primary sort key for the admin list - the operators an admin is
+          most likely acting on (recently active) surface first - and the frontend
+          can show it as a "last solved" hint.
+        type: string
+      live:
+        allOf:
+        - $ref: '#/definitions/labs.LiveUsage'
+        description: |-
+          Live is the user's in-flight consumption from sessions running right now,
+          nil when they have none. Populated by the handler from the labs.Manager,
+          not from the database - a running session has no lab_usage row yet. Kept
+          separate from Usage so the UI can show "using N now" distinctly from
+          lifetime totals, and so neither has to be recomputed to render the other.
+      oauthProvider:
+        type: string
+      quotaOverrideGibMinutes:
+        description: |-
+          QuotaOverrideGiBMinutes is this user's per-user daily quota override, nil
+          when they fall back to the global default. Admin-editable. Semantics: nil =
+          global default; 0 = unlimited (exempt); a positive value = this user's cap.
+        type: number
+      role:
+        description: |-
+          Role is "user" or "admin" - see internal/api/auth.go's requireAdmin,
+          which checks it fresh from the DB rather than trusting a JWT claim,
+          so revoking admin access takes effect without waiting for a token
+          to expire.
+        type: string
+      usage:
+        allOf:
+        - $ref: '#/definitions/accounts.UserUsage'
+        description: |-
+          Usage is this account's HISTORICAL consumption from finished sessions, or
+          nil for a user who has never completed one. Components stay separate all the
+          way to the UI (see UserUsage) so the page can present them however it likes
+          and any "credits" figure remains a formula over them, not a stored number.
+      username:
+        type: string
+    type: object
+  accounts.DayActivity:
+    properties:
+      count:
+        type: integer
+      date:
+        description: YYYY-MM-DD (UTC)
+        type: string
+    type: object
+  accounts.LabSetting:
+    properties:
+      durationMinutes:
+        type: integer
+      idleMinutes:
+        type: integer
+      isDefault:
+        type: boolean
+      moduleSlug:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+    type: object
+  accounts.Profile:
+    properties:
+      bio:
+        type: string
+      hasAvatar:
+        type: boolean
+      linkedin:
+        description: https linkedin.com profile URL, or ""
+        type: string
+      website:
+        type: string
+      x:
+        description: https x.com / twitter.com profile URL, or ""
+        type: string
+    type: object
+  accounts.PublicProfile:
+    properties:
+      activity:
+        description: |-
+          Activity is the trailing ActivityDays of daily session counts (active days
+          only, oldest first). ActivityDays is the window length so the frontend can
+          size the grid without guessing.
+        items:
+          $ref: '#/definitions/accounts.DayActivity'
+        type: array
+      activityDays:
+        type: integer
+      bio:
+        type: string
+      fastestSolveSeconds:
+        type: integer
+      hasAvatar:
+        type: boolean
+      joinedAt:
+        type: string
+      labsCompleted:
+        type: integer
+      linkedin:
+        type: string
+      longestStreakDays:
+        type: integer
+      rank:
+        type: integer
+      totalOperators:
+        type: integer
+      username:
+        type: string
+      website:
+        type: string
+      x:
+        type: string
+    type: object
+  accounts.User:
+    properties:
+      blocked:
+        description: |-
+          Blocked users can't authenticate - checked at login (see
+          ErrUserBlocked) and re-checked on every request by requireAuth, for the
+          same reason Role is re-read from the DB: blocking must take effect
+          immediately, not whenever an already-issued token happens to expire.
+        type: boolean
+      email:
+        type: string
+      hasAvatar:
+        description: |-
+          HasAvatar is `avatar IS NOT NULL` - it lets any client that has the
+          current user (the whole frontend, via /auth/me) decide whether to show
+          the uploaded image at /users/{id}/avatar or fall back to an initial,
+          without a second round-trip to /profile. The image bytes are never put
+          on this struct; see accounts.GetProfile for the same NULL-check pattern.
+        type: boolean
+      id:
+        type: string
+      oauthProvider:
+        type: string
+      role:
+        description: |-
+          Role is "user" or "admin" - see internal/api/auth.go's requireAdmin,
+          which checks it fresh from the DB rather than trusting a JWT claim,
+          so revoking admin access takes effect without waiting for a token
+          to expire.
+        type: string
+      username:
+        type: string
+    type: object
+  accounts.UserUsage:
+    properties:
+      lastSessionAt:
+        type: string
+      totalCpuSeconds:
+        type: number
+      totalEgressBytes:
+        type: integer
+      totalGibMinutes:
+        description: 'Lifetime figures: who is heavy overall, independent of the window.'
+        type: number
+      totalSessions:
+        type: integer
+      userId:
+        type: string
+      windowGibMinutes:
+        description: 'Trailing-window figures: what the quota actually acts on.'
+        type: number
+      windowSessions:
+        type: integer
+    type: object
+  api.answerBody:
+    properties:
+      option:
+        type: integer
+      stepSlug:
+        type: string
+    type: object
+  api.flagBody:
+    properties:
+      flag:
+        type: string
+    type: object
+  api.flagResponse:
+    properties:
+      complete:
+        type: boolean
+      correct:
+        type: boolean
+    type: object
+  api.labSettingBody:
+    properties:
+      durationMinutes:
+        type: integer
+      idleMinutes:
+        type: integer
+    type: object
+  api.leaderboardEntryDTO:
+    properties:
+      distinction:
+        description: |-
+          Distinction is a category slug ("fastest escape" / "longest streak" /
+          "most labs cleared") for the holder of that superlative; empty otherwise.
+          The frontend pairs it with the entry's own number for the flavor line.
+        type: string
+      fastestSolveSeconds:
+        type: integer
+      hasAvatar:
+        type: boolean
+      isViewer:
+        type: boolean
+      labsCompleted:
+        type: integer
+      labsTrend:
+        description: |-
+          LabsTrend is the cumulative labs-cleared sparkline series (see
+          accounts.LeaderboardEntry). null for an operator with no completions.
+        items:
+          type: integer
+        type: array
+      linkedin:
+        type: string
+      longestStreakDays:
+        type: integer
+      rank:
+        type: integer
+      userId:
+        description: |-
+          UserID is an internal account id and is only sent to a signed-in caller
+          (who can actually use it - avatars are auth-gated). A signed-out visitor's
+          board is keyed by rank alone, so no internal identifier rides a public
+          payload. omitempty drops it entirely when unset.
+        type: string
+      username:
+        type: string
+      x:
+        description: |-
+          Public profile links the operator added in Settings, shown as icons on the
+          board. Server-validated to https on the expected hosts; omitempty when unset.
+        type: string
+    type: object
+  api.leaderboardResponse:
+    properties:
+      entries:
+        items:
+          $ref: '#/definitions/api.leaderboardEntryDTO'
+        type: array
+      locked:
+        type: boolean
+      nextTarget:
+        allOf:
+        - $ref: '#/definitions/api.leaderboardEntryDTO'
+        description: |-
+          NextTarget is the operator the climb widget aims the viewer at - a genuine
+          step up rather than whoever they are level with (see climbTargetIdx: one
+          lab-tier beyond the immediate neighbour, with a medalist carve-out).
+          Computed over the FULL board even when it's locked, so a not-yet-on-the-board
+          viewer still gets a real target rather than the far-off #1. nil when no one
+          is ahead (the viewer leads) or there's no authenticated viewer. It names one
+          operator; it never discloses the board's size or tail.
+      revealed:
+        type: integer
+      viewer:
+        $ref: '#/definitions/api.leaderboardViewer'
+    type: object
+  api.leaderboardViewer:
+    properties:
+      authenticated:
+        type: boolean
+      hasClearedLab:
+        type: boolean
+      labsCompleted:
+        description: |-
+          LabsCompleted is the viewer's own count, sent so the sidebar climb widget
+          can frame "N labs behind" without the viewer's row being in the revealed
+          slice (a locked board only reveals the top ranks, never the viewer's tail
+          position). Zero for a viewer not found on the board.
+        type: integer
+      rank:
+        type: integer
+    type: object
+  api.progressResponse:
+    properties:
+      answered:
+        type: integer
+      answers:
+        additionalProperties:
+          type: integer
+        type: object
+      complete:
+        type: boolean
+      moduleSlug:
+        type: string
+      quizCount:
+        type: integer
+    type: object
+  course.Chip:
+    properties:
+      label:
+        type: string
+      tone:
+        description: |-
+          Tone is semantic, never a colour: accent = a key idea, warn = caution,
+          danger = a pitfall.
+        type: string
+    type: object
+  course.Course:
+    properties:
+      moduleSlug:
+        type: string
+      steps:
+        items:
+          $ref: '#/definitions/course.Step'
+        type: array
+    type: object
+  course.Diagram:
+    properties:
+      caption:
+        description: |-
+          Caption renders in the reserved y 240-270 band, so it can never collide
+          with the shapes above it.
+        type: string
+      shapes:
+        items:
+          $ref: '#/definitions/course.Shape'
+        type: array
+    type: object
+  course.Kind:
+    enum:
+    - concept
+    - quiz
+    - flag
+    type: string
+    x-enum-varnames:
+    - KindConcept
+    - KindQuiz
+    - KindFlag
+  course.Point:
+    properties:
+      x:
+        type: number
+      "y":
+        type: number
+    type: object
+  course.QuizOption:
+    properties:
+      correct:
+        type: boolean
+      t:
+        type: string
+    type: object
+  course.Shape:
+    properties:
+      anchor:
+        type: string
+      arrow:
+        description: |-
+          Arrow defaults to true, so it is a pointer: a plain bool couldn't tell
+          "author wrote arrow: false" from "author didn't mention arrows".
+        type: boolean
+      broken:
+        type: boolean
+      cx:
+        description: seal
+        type: number
+      cy:
+        type: number
+      dashed:
+        type: boolean
+      delay:
+        type: number
+      from:
+        allOf:
+        - $ref: '#/definitions/course.Point'
+        description: wire
+      h:
+        type: number
+      label:
+        type: string
+      r:
+        type: number
+      sub:
+        type: string
+      text:
+        description: label
+        type: string
+      to:
+        $ref: '#/definitions/course.Point'
+      tone:
+        type: string
+      type:
+        description: box | wire | label | seal
+        type: string
+      w:
+        type: number
+      x:
+        description: box
+        type: number
+      "y":
+        type: number
+    type: object
+  course.Step:
+    properties:
+      aha:
+        type: string
+      body:
+        description: |-
+          BodyHTML is the rendered form the client actually displays. Populated by
+          Render, empty on a freshly parsed Step.
+        type: string
+      chip:
+        $ref: '#/definitions/course.Chip'
+      diagram:
+        $ref: '#/definitions/course.Diagram'
+      explain:
+        type: string
+      ey:
+        type: string
+      eyt:
+        type: string
+      index:
+        description: |-
+          Index is the step's position, taken from the filename prefix rather than
+          a field, so "what order do these go in" is answerable by listing the
+          directory instead of opening every file.
+        type: integer
+      kind:
+        $ref: '#/definitions/course.Kind'
+      opts:
+        items:
+          $ref: '#/definitions/course.QuizOption'
+        type: array
+      q:
+        type: string
+      revealLabel:
+        type: string
+      slug:
+        description: |-
+          Slug is the file's basename without the ordering prefix ("01-rbac.md" ->
+          "rbac"). Stable across reordering, so progress records and deep links
+          don't break when a step is inserted in the middle.
+        type: string
+      tag:
+        description: |-
+          Tag and Chip compete for the same top-right slot. Both set is rejected at
+          parse time rather than silently resolved - the template picks chip, but
+          an author who wrote both meant something and should be told which won.
+        type: string
+      title:
+        description: '--- concept steps ---'
+        type: string
+    type: object
+  drivers.Driver:
+    properties:
+      depends:
+        type: string
+      description:
+        type: string
+      filename:
+        type: string
+      id:
+        type: string
+      isSigned:
+        type: boolean
+      license:
+        type: string
+      modName:
+        type: string
+      sha256:
+        type: string
+      signer:
+        type: string
+      sizeBytes:
+        type: integer
+      status:
+        type: string
+      uploadedAt:
+        type: string
+      uploadedBy:
+        type: string
+      vermagic:
+        type: string
+      vetReason:
+        type: string
+      vettedAt:
+        type: string
+      vettedBy:
+        type: string
+      visibility:
+        type: string
+    type: object
+  health.Namespace:
+    properties:
+      name:
+        type: string
+      pods:
+        items:
+          $ref: '#/definitions/health.Pod'
+        type: array
+    type: object
+  health.Pod:
+    properties:
+      name:
+        type: string
+      phase:
+        type: string
+      ready:
+        type: string
+      restarts:
+        type: integer
+    type: object
+  labs.KernelKind:
+    enum:
+    - ""
+    - ebpf
+    - research-dev
+    - research-hard
+    type: string
+    x-enum-comments:
+      KernelDefault: kata-fc
+      KernelEBPF: kata-fc-ebpf
+      KernelResearchDev: kata-fc-research-dev (KASAN+KCOV+BTF, unhardened)
+      KernelResearchHard: kata-fc-research-hard (KASAN+KCOV+BTF, production mitigations)
+    x-enum-descriptions:
+    - kata-fc
+    - kata-fc-ebpf
+    - kata-fc-research-dev (KASAN+KCOV+BTF, unhardened)
+    - kata-fc-research-hard (KASAN+KCOV+BTF, production mitigations)
+    x-enum-varnames:
+    - KernelDefault
+    - KernelEBPF
+    - KernelResearchDev
+    - KernelResearchHard
+  labs.LiveUsage:
+    properties:
+      gibMinutes:
+        type: number
+      reservedBytes:
+        type: integer
+      sessions:
+        type: integer
+    type: object
+  labs.Module:
+    properties:
+      defender:
+        description: |-
+          HasDefender tells the frontend to show the Defender tab: true iff this
+          module ships an in-guest sensor whose stream the Defender pane tails
+          (Nested.Defender != nil). Computed centrally in init(), not authored per
+          module. It is deliberately NOT the EBPF flag: the two coincided until the
+          research labs, which have a Defender pane but select their kernel via
+          Kernel, not EBPF - gating the tab on EBPF would hide their sensor. Gating on
+          "does it actually have a defender" is the real question and stays correct as
+          the kernel taxonomy grows. See docs/architecture/kasan-research-lab.md.
+        type: boolean
+      description:
+        type: string
+      displayName:
+        type: string
+      ebpf:
+        description: |-
+          EBPF opts this module into an eBPF-capable guest kernel (BTF/kprobes/
+          tracefs) so the student can run eBPF tooling - Tetragon, bpftrace - inside
+          their own lab microVM. Per-session opt-in by design: only eBPF labs pay the
+          heavier kernel, every other lab keeps the lean, fast-booting stock one. The
+          backend expresses this by selecting a dedicated RuntimeClass for the runner
+          pod (see Config.runtimeClassFor / buildRunnerPod); the eBPF caps and mounts
+          themselves live on the *nested* lab pod in Nested.Manifests, governed by the
+          nested cluster's PodSecurity. See docs/architecture/ebpf-per-session.md.
+        type: boolean
+      hint:
+        description: a nudge, not the answer - see services/labs/<slug>/README.md
+          for the full walkthrough
+        type: string
+      kernel:
+        allOf:
+        - $ref: '#/definitions/labs.KernelKind'
+        description: |-
+          Kernel selects the guest kernel (and thus RuntimeClass) this module's
+          session runs on, generalizing EBPF. Empty is the default lean kernel;
+          "ebpf" is the eBPF-capable kernel (equivalent to EBPF: true, kept for the
+          existing modules); "research-dev" / "research-hard" are the KASAN+KCOV+BTF
+          instrumented kernels for the driver-research labs (the guest kernel is the
+          exploitation target). Selected via Config.runtimeClassFor. The research
+          kernels are KASAN+eBPF, so they also take the eBPF caps/mounts path (see
+          usesEBPFKernel). See docs/architecture/kasan-research-lab.md.
+      nested:
+        allOf:
+        - $ref: '#/definitions/labs.NestedSpec'
+        description: |-
+          Nested carries the disposable-cluster spec. Required: Create rejects a
+          module without one (see session.go).
+      slug:
+        type: string
+      track:
+        description: |-
+          Track is the tactic bucket the sidebar groups this module under (see
+          trackOf). Unlike Order, it IS serialised: the frontend renders the catalog
+          as collapsible track sections (First Flight, then Recon, Privilege
+          Escalation, ...) rather than one flat list, so it needs the label per
+          module. Order still sorts labs WITHIN a track. Assigned centrally in
+          init() from trackOf so the buckets live in one readable place, not smeared
+          across every module literal.
+        type: string
+    type: object
+  labs.NestedSpec:
+    properties:
+      entryPort:
+        type: integer
+    type: object
+  labs.Session:
+    properties:
+      error:
+        type: string
+      id:
+        type: string
+      moduleSlug:
+        type: string
+      phase:
+        description: |-
+          Phase is the last provisioning gate this session cleared while status is
+          "starting" (one of the phase() milestones in provisionNested: "pod-created",
+          "pod-ready", "kubeconfig-fetched", "nested-node-ready", "manifests-applied",
+          "foothold-ready"). Empty until the first gate clears, and meaningless once
+          running. The provisioning UI reads it to anchor its progress bar to real
+          backend progress instead of a wall-clock guess - so a slow (busy-hours)
+          boot no longer runs the bar ahead of reality. Written under Manager.mu by
+          the provision goroutine, read under it by Get.
+        type: string
+      status:
+        description: '"starting", "running", "error"'
+        type: string
+    type: object
+  topology.ArgoSignal:
+    properties:
+      outOfSync:
+        items:
+          type: string
+        type: array
+      synced:
+        type: integer
+      total:
+        type: integer
+    type: object
+  topology.Capacity:
+    properties:
+      byUser:
+        description: |-
+          ByUser breaks the reserved totals down by the user whose sessions hold
+          them, so the admin charts can attribute consumption (who is using how much)
+          rather than only showing the aggregate. Every reserved byte belongs to some
+          user's session - there is no unattributed platform overhead in these
+          numbers - so the parts sum to the totals above. Sorted heaviest-first and
+          capped: past a handful of users the tail folds into a single "others" row
+          (User == ""), keeping the stacked column readable.
+        items:
+          $ref: '#/definitions/topology.CapacityUser'
+        type: array
+      cpuAllocatableMillis:
+        type: integer
+      cpuReservedMillis:
+        description: |-
+          CPU, in millicores. Reserved is the sum of live sessions' CPU requests;
+          Allocatable is the labs node(s) total. There is no "used" here by design -
+          see the type comment.
+        type: integer
+      cpuSystemReservedMillis:
+        type: integer
+      memAllocatableBytes:
+        type: integer
+      memBudgetBytes:
+        type: integer
+      memReservedBytes:
+        description: |-
+          Memory, in bytes. Reserved is the sum of live sessions' SessionMemory;
+          Budget is the admission gate's ceiling (0 = disabled); Allocatable is the
+          labs node(s) total. Budget usually sits below Allocatable on purpose - the
+          backend refuses just before the scheduler would.
+        type: integer
+      memSystemReservedBytes:
+        description: |-
+          SystemReserved is the non-lab baseline: the summed requests of the platform
+          pods scheduled on the labs node(s) - DaemonSets (tetragon, CNI), coredns and
+          the like - which hold real allocatable before any session starts. Shown as a
+          muted base under the lab usage so a column reads as honest headroom rather
+          than empty. Excludes session-runner pods, which are the MemReserved above.
+        type: integer
+    type: object
+  topology.CapacityUser:
+    properties:
+      cpuMillis:
+        type: integer
+      memBytes:
+        type: integer
+      sessions:
+        type: integer
+      user:
+        description: username, or "" for the folded "others" row
+        type: string
+    type: object
+  topology.CertSignal:
+    properties:
+      expiring:
+        description: ns/name, expiring < certWarnDays
+        items:
+          type: string
+        type: array
+      soonestDays:
+        type: integer
+    type: object
+  topology.Dashboard:
+    properties:
+      label:
+        type: string
+      path:
+        type: string
+      ref:
+        type: string
+    type: object
+  topology.Edge:
+    properties:
+      from:
+        type: string
+      kind:
+        type: string
+      port:
+        type: string
+      to:
+        type: string
+    type: object
+  topology.Layer:
+    properties:
+      icon:
+        type: string
+      kind:
+        description: '"net" | "wall" | "warn"'
+        type: string
+      nodeRole:
+        type: string
+      sub:
+        type: string
+      title:
+        type: string
+    type: object
+  topology.Namespace:
+    properties:
+      name:
+        type: string
+      pods:
+        items:
+          $ref: '#/definitions/topology.Pod'
+        type: array
+      resources:
+        $ref: '#/definitions/topology.NsResources'
+    type: object
+  topology.NestedCluster:
+    properties:
+      edges:
+        description: |-
+          Edges is the nested cluster's internal communication graph - currently
+          the lab's cross-namespace escape path (foothold -> the Secret it was never
+          meant to reach), derived from the enumerated contents. See escapeEdges.
+        items:
+          $ref: '#/definitions/topology.Edge'
+        type: array
+      error:
+        type: string
+      namespaces:
+        items:
+          $ref: '#/definitions/topology.Namespace'
+        type: array
+      reachable:
+        type: boolean
+    type: object
+  topology.Node:
+    properties:
+      allocatableCpuMillis:
+        description: |-
+          Allocatable is what the scheduler may hand out on this node (Status.
+          Allocatable, i.e. capacity minus system/kube reservations). It is the
+          honest denominator for the capacity summary: sessions are scheduled
+          against allocatable, not raw hardware.
+        type: integer
+      allocatableMemBytes:
+        type: integer
+      kernel:
+        description: from Status.NodeInfo.KernelVersion
+        type: string
+      name:
+        type: string
+      os:
+        description: from Status.NodeInfo.OSImage
+        type: string
+      ready:
+        type: boolean
+      role:
+        description: '"control-plane" | "labs" | "worker"'
+        type: string
+      runtime:
+        description: from Status.NodeInfo.ContainerRuntimeVersion
+        type: string
+    type: object
+  topology.NsResources:
+    properties:
+      configMaps:
+        type: integer
+      networkPolicies:
+        type: integer
+      roleBindings:
+        type: integer
+      roles:
+        type: integer
+      secretNames:
+        items:
+          type: string
+        type: array
+      secrets:
+        type: integer
+      serviceAccounts:
+        type: integer
+      services:
+        type: integer
+    type: object
+  topology.Pod:
+    properties:
+      app:
+        description: |-
+          App is the pod's app.kubernetes.io/name label - the stable key the
+          static wiring's edges/dashboards match on (a Helm release can name the
+          workload <release>-<chart>, e.g. backend-backend, so the name-derived
+          Workload isn't reliable for matching; the label is). Empty if unlabelled;
+          the frontend then falls back to Workload/name.
+        type: string
+      containers:
+        items:
+          type: string
+        type: array
+      cpuRequestMillis:
+        type: integer
+      ip:
+        type: string
+      memRequestBytes:
+        description: |-
+          Scheduler-visible resource requests summed over the pod's containers. The
+          capacity summary sums these across non-session pods on the labs node to
+          draw the platform baseline (see Capacity.MemSystemReservedBytes).
+        type: integer
+      name:
+        type: string
+      namespace:
+        type: string
+      node:
+        type: string
+      phase:
+        type: string
+      ready:
+        type: string
+      restarts:
+        type: integer
+      workload:
+        type: string
+    type: object
+  topology.ScopedTopology:
+    properties:
+      boundary:
+        description: Boundary is the id of the opaque outside-your-lab node.
+        type: string
+      edges:
+        items:
+          $ref: '#/definitions/topology.Edge'
+        type: array
+      error:
+        description: Error explains an unreachable cluster in the student's terms.
+        type: string
+      namespaces:
+        description: |-
+          Namespaces are the student's own nested cluster's, including pod names
+          and container lists. Safe: this cluster is the disposable target, created
+          for them and destroyed with their session.
+        items:
+          $ref: '#/definitions/topology.Namespace'
+        type: array
+    type: object
+  topology.Session:
+    properties:
+      cluster:
+        $ref: '#/definitions/topology.NestedCluster'
+      gibMinutes:
+        type: number
+      id:
+        type: string
+      module:
+        type: string
+      reservedBytes:
+        description: |-
+          ReservedBytes is the memory this session holds on the labs node
+          (labs.SessionMemory), and GiBMinutes is what it has accrued so far
+          (reservation x minutes alive). Both are the live cost, set by the topology
+          handler from the session manager - the admin map is where an operator wants
+          to see what each running lab is actually costing, not just that it exists.
+        type: integer
+      status:
+        type: string
+    type: object
+  topology.Signals:
+    properties:
+      argo:
+        $ref: '#/definitions/topology.ArgoSignal'
+      certs:
+        $ref: '#/definitions/topology.CertSignal'
+    type: object
+  topology.Topology:
+    properties:
+      capacity:
+        $ref: '#/definitions/topology.Capacity'
+      dashboards:
+        items:
+          $ref: '#/definitions/topology.Dashboard'
+        type: array
+      edges:
+        items:
+          $ref: '#/definitions/topology.Edge'
+        type: array
+      layers:
+        items:
+          $ref: '#/definitions/topology.Layer'
+        type: array
+      namespaces:
+        items:
+          $ref: '#/definitions/topology.Namespace'
+        type: array
+      nodes:
+        items:
+          $ref: '#/definitions/topology.Node'
+        type: array
+      sessions:
+        items:
+          $ref: '#/definitions/topology.Session'
+        type: array
+      signals:
+        $ref: '#/definitions/topology.Signals'
+    type: object
+info:
+  contact: {}
+  description: Backend API for the lab catalog, auth, and session lifecycle. See docs/architecture/tech-stack.md
+    for why this is stdlib net/http, not a framework.
+  title: K8 Labs API
+  version: 0.1.0
+paths:
+  /admin/drivers:
+    get:
+      description: Filter by ?status=pending|approved|denied (default pending). Admin
+        only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/drivers.Driver'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List research drivers for vetting
+      tags:
+      - admin
+  /admin/drivers/{id}/decision:
+    post:
+      consumes:
+      - application/json
+      description: Approve (optionally into the shared catalog) or deny an uploaded
+        module. Admin only.
+      parameters:
+      - description: Driver ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: bad request
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Vet a research driver
+      tags:
+      - admin
+  /admin/health:
+    get:
+      description: Pod status across every namespace the platform's own components
+        use (see internal/health.Namespaces). Admin only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/health.Namespace'
+            type: array
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Cluster health
+      tags:
+      - admin
+  /admin/labs/settings:
+    get:
+      description: Effective settings for every module - modules with no override
+        report isDefault=true with the built-in values, so the UI can render one row
+        per lab without knowing which were customised.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/accounts.LabSetting'
+            type: array
+        "403":
+          description: forbidden - admin only
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: List per-lab settings
+      tags:
+      - admin
+  /admin/labs/settings/{slug}:
+    delete:
+      description: Drops the module's override so it falls back to the built-in default
+        (60m duration, 20m idle). Resetting a lab that was never customised is not
+        an error.
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      responses:
+        "204":
+          description: reset
+          schema:
+            type: string
+        "403":
+          description: forbidden - admin only
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Reset a lab to the default limits
+      tags:
+      - admin
+    put:
+      consumes:
+      - application/json
+      description: Upserts the duration and idle timeout for one module. Rejected
+        (400) rather than silently clamped when out of range, or when the idle timeout
+        exceeds the duration - an idle timeout past the hard cap could never fire,
+        so accepting it would show an admin a setting that does nothing.
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Limits in minutes
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.labSettingBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: updated
+          schema:
+            type: string
+        "400":
+          description: invalid limits
+          schema:
+            type: string
+        "403":
+          description: forbidden - admin only
+          schema:
+            type: string
+        "404":
+          description: unknown module
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Set a lab's session limits
+      tags:
+      - admin
+  /admin/topology:
+    get:
+      description: Live map of nodes, namespaces, pods and containers, joined with
+        the static wiring (edges, host-substrate layers, dashboards) and active lab
+        sessions. Admin only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/topology.Topology'
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+        "503":
+          description: topology unavailable - not running in-cluster
+          schema:
+            type: string
+      summary: Cluster topology
+      tags:
+      - admin
+  /admin/users:
+    get:
+      description: Every account with its lab entitlements, for the admin user-management
+        page.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/accounts.AdminUser'
+            type: array
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: List users
+      tags:
+      - admin
+  /admin/users/{id}:
+    delete:
+      description: Permanently removes the account and its lab grants, and tears down
+        its running sessions. Irreversible - block instead to suspend someone reversibly.
+      parameters:
+      - description: user ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: unknown user, or admins cannot delete themselves
+          schema:
+            type: string
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Delete a user
+      tags:
+      - admin
+  /admin/users/{id}/blocked:
+    post:
+      consumes:
+      - application/json
+      description: Blocking denies authentication entirely and tears down the user's
+        running sessions. Grants are preserved, so unblocking restores prior access.
+      parameters:
+      - description: user ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: unknown user, or admins cannot block themselves
+          schema:
+            type: string
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Block or unblock a user
+      tags:
+      - admin
+  /admin/users/{id}/grants:
+    post:
+      consumes:
+      - application/json
+      description: Gives the user access to one module. Idempotent - re-granting is
+        a no-op.
+      parameters:
+      - description: user ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: unknown module, or missing user
+          schema:
+            type: string
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Grant a lab to a user
+      tags:
+      - admin
+  /admin/users/{id}/grants/{slug}:
+    delete:
+      description: Removes the user's access to one module and tears down any session
+        they have running for it.
+      parameters:
+      - description: user ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Revoke a lab from a user
+      tags:
+      - admin
+  /admin/users/{id}/quota:
+    post:
+      consumes:
+      - application/json
+      description: Overrides the global LABS_DAILY_QUOTA_GIB_MINUTES for one user.
+        gibMinutes null clears the override (back to the global default); 0 exempts
+        the user; a positive value is their cap.
+      parameters:
+      - description: user ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: unknown user, or a negative value
+          schema:
+            type: string
+        "403":
+          description: forbidden - not an admin
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Set or clear a user's daily quota override
+      tags:
+      - admin
+  /apikeys:
+    get:
+      description: Metadata only. Key secrets are stored hashed and are unrecoverable
+        after creation.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/accounts.APIKey'
+            type: array
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: List your API keys
+      tags:
+      - api-keys
+    post:
+      consumes:
+      - application/json
+      description: 'Returns the key once, in the "key" field - it is not stored in
+        plaintext and cannot be retrieved again. The key authenticates as you: same
+        labs, same role, and it stops working the moment your access is revoked or
+        your account is blocked. expiresInDays omitted defaults to 30; 0 means never
+        expires.'
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{\"key\": \"k8labs_...\", \"apiKey\": accounts.APIKey}'
+          schema:
+            type: object
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Create an API key
+      tags:
+      - api-keys
+  /apikeys/{id}:
+    delete:
+      description: Revokes one of your own keys. 404 if no such key belongs to you
+        - the same answer whether it doesn't exist or belongs to someone else.
+      parameters:
+      - description: key ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "404":
+          description: no such key
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Revoke an API key
+      tags:
+      - api-keys
+  /auth/github/callback:
+    post:
+      consumes:
+      - application/json
+      description: Same shape as the Google callback (see finishLogin) - exchanges
+        a code, finds or creates the user, issues a session.
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{\"user\": accounts.User, \"token\": string}'
+          schema:
+            type: object
+        "400":
+          description: invalid request body, redirect_uri not allowed, or GitHub account
+            has no accessible email
+          schema:
+            type: string
+        "401":
+          description: code exchange or userinfo lookup failed
+          schema:
+            type: string
+      summary: GitHub OAuth callback
+      tags:
+      - auth
+  /auth/google/callback:
+    post:
+      consumes:
+      - application/json
+      description: Exchanges an authorization code for the Google account, finds or
+        creates the matching user, and issues a session (cookie + Bearer token, see
+        finishLogin).
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{\"user\": accounts.User, \"token\": string}'
+          schema:
+            type: object
+        "400":
+          description: invalid request body or redirect_uri not allowed
+          schema:
+            type: string
+        "401":
+          description: code exchange or userinfo lookup failed
+          schema:
+            type: string
+      summary: Google OAuth callback
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      description: Clears the auth cookie server-side; clearing the Bearer token from
+        localStorage is the frontend's job (see lib/api.ts's logout()).
+      responses:
+        "200":
+          description: OK
+      summary: Log out
+      tags:
+      - auth
+  /auth/me:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/accounts.User'
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Current user
+      tags:
+      - auth
+  /drivers:
+    get:
+      description: The shared vetted catalog plus your own uploads (any status). Research-grant
+        gated.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/drivers.Driver'
+            type: array
+        "403":
+          description: forbidden - needs a research lab grant
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: List research drivers you may use
+      tags:
+      - drivers
+    post:
+      consumes:
+      - application/octet-stream
+      description: Raw .ko bytes as the request body (like avatar upload). Filename
+        via ?filename=. Parsed and filed as pending for admin vetting. Research-grant
+        gated.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/drivers.Driver'
+        "400":
+          description: not a valid .ko
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "409":
+          description: already uploaded
+          schema:
+            type: string
+        "413":
+          description: module too large
+          schema:
+            type: string
+        "429":
+          description: per-user upload quota or rate limit exceeded
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Upload a compiled kernel module (.ko)
+      tags:
+      - drivers
+  /leaderboard:
+    get:
+      description: Public. Signed-out visitors and signed-in users who haven't cleared
+        a lab see the top ranks only (the tail is gated, and the total is never disclosed).
+        A signed-in user who has completed a lab sees the full board and their own
+        rank.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.leaderboardResponse'
+      summary: The operator leaderboard
+      tags:
+      - labs
+  /modules:
+    get:
+      description: The lab modules the caller is entitled to. Admins get the full
+        catalog; a regular user gets the free first lab plus everything progression
+        has unlocked (each tier opens when the previous is solved) and any explicit
+        grants. The X-Modules-Locked response header reports how many catalog labs
+        are still locked for the caller (0 for admins).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/labs.Module'
+            type: array
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: List lab modules
+      tags:
+      - labs
+  /modules/{slug}/course:
+    get:
+      description: 'The lesson shown in the lab''s left pane. Entitlement-gated exactly
+        like starting the lab: a user who was never granted this module gets 403,
+        not the content. A module with no course authored yet returns an empty step
+        list rather than 404 - a lab without a lesson is incomplete, not broken.'
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/course.Course'
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "403":
+          description: forbidden - module not granted
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Get a lab's guided course
+      tags:
+      - labs
+  /modules/{slug}/flag:
+    post:
+      consumes:
+      - application/json
+      description: Checks the submitted flag against the module's expected flag (held
+        server-side, never served) and, on a match, marks the lab complete - the moment
+        and solve time are frozen once and never re-timed. A wrong flag is a normal
+        200 with correct=false, not an error.
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: The captured flag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.flagBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.flagResponse'
+        "400":
+          description: invalid body, or this lab has no flag
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "403":
+          description: forbidden - module not granted
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Submit the CTF flag captured in a lab
+      tags:
+      - labs
+  /modules/{slug}/progress:
+    delete:
+      description: 'Deletes the caller''s whole progress row for this module - quiz
+        answers, completion and solve time. This is the "restart the lab / retake
+        the questions" control: after it, every quiz is unanswered again and the lab
+        is unsolved until the flag is resubmitted. Idempotent - clearing a lab with
+        no progress is not an error.'
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      responses:
+        "204":
+          description: cleared
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Clear the caller's progress in a lab (restart)
+      tags:
+      - labs
+    get:
+      description: Scoped to the caller - progress is keyed by (user, module), never
+        by session, so it survives a session being reaped and the lab being restarted
+        another day. `complete` reflects the captured flag, not the quizzes.
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.progressResponse'
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Get the caller's progress in a lab's course
+      tags:
+      - labs
+    put:
+      consumes:
+      - application/json
+      description: 'Upserts a single answer into the caller''s progress. Quizzes are
+        formative: this records the answer (right or wrong) but never marks the lab
+        complete - only submitting the captured flag does that. Rejects a step slug
+        that isn''t a quiz in this course.'
+      parameters:
+      - description: Module slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: The step and chosen option
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.answerBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.progressResponse'
+        "400":
+          description: unknown step, or not a quiz step
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "403":
+          description: forbidden - module not granted
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Record an answer to one quiz step
+      tags:
+      - labs
+  /operators:
+    get:
+      description: Public. The top few ranked operators with their real stats and
+        activity calendar, for the landing "track record" deck.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/accounts.PublicProfile'
+            type: array
+      summary: Top operators for the landing showcase
+      tags:
+      - labs
+  /operators/{username}:
+    get:
+      description: Public. One operator's handle, self-published bio/website, leaderboard
+        standing, and daily activity calendar. Never an email or session detail.
+      parameters:
+      - description: operator handle
+        in: path
+        name: username
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/accounts.PublicProfile'
+        "404":
+          description: not found
+          schema:
+            type: string
+      summary: A public operator profile
+      tags:
+      - labs
+  /profile:
+    get:
+      description: The signed-in user's own editable profile (website, bio, whether
+        an avatar is set).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/accounts.Profile'
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Get your profile
+      tags:
+      - profile
+    patch:
+      consumes:
+      - application/json
+      description: Sets website and bio on your own account. Website must be an http(s)
+        URL - it's rendered as a link, so other schemes are rejected.
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/accounts.Profile'
+        "400":
+          description: invalid website or bio too long
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Update your profile
+      tags:
+      - profile
+  /profile/avatar:
+    delete:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Remove your avatar
+      tags:
+      - profile
+    post:
+      consumes:
+      - application/octet-stream
+      description: Raw image bytes as the request body (PNG/JPEG/GIF/WebP, max 1MB).
+        The type is detected from the file's own magic bytes, not the Content-Type
+        header. SVG is rejected - it can carry script and would be stored XSS served
+        from this origin.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: unsupported image type
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "413":
+          description: image too large
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Upload your avatar
+      tags:
+      - profile
+  /profile/username:
+    patch:
+      consumes:
+      - application/json
+      description: Sets the handle shown on the leaderboard and used in your public
+        /operators/{username} URL. 3-32 chars of letters, digits, _ or -; must be
+        unique (case-insensitive).
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{\"username\": \"new_handle\"}'
+          schema:
+            type: object
+        "400":
+          description: invalid display name
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "409":
+          description: display name already taken
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Change your display name
+      tags:
+      - profile
+  /sessions:
+    post:
+      consumes:
+      - application/json
+      description: Provisions a per-session pod (target app + EDR sensor) for the
+        chosen module. Ownership is recorded from the caller's token.
+      parameters:
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/labs.Session'
+        "403":
+          description: forbidden - no grant for this module
+          schema:
+            type: string
+        "502":
+          description: session provisioning failed - Session.Status is \"error\",
+            Session.Error has the reason
+          schema:
+            $ref: '#/definitions/labs.Session'
+      security:
+      - BearerAuth: []
+      summary: Start a lab session
+      tags:
+      - labs
+  /sessions/{id}:
+    delete:
+      description: Requires auth *and* ownership (Session.OwnerID must match the caller)
+        - any other authenticated user gets 403, not just 401.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "403":
+          description: forbidden - not this session's owner
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Stop a lab session
+      tags:
+      - labs
+    get:
+      description: Requires auth *and* ownership (Session.OwnerID must match the caller)
+        - the same gate as delete/terminal.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/labs.Session'
+        "403":
+          description: forbidden - not this session's owner
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Get session status
+      tags:
+      - labs
+  /sessions/{id}/extend:
+    post:
+      description: Pushes a running research session's hard cap out by 2h (up to a
+        48h cap), sliding any live AI grant with it. Requires auth *and* ownership;
+        only research labs are extendable. Returns the updated session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/labs.Session'
+        "403":
+          description: forbidden - not the owner, or lab is not extendable
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+        "409":
+          description: not running, or already at the 48h cap
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Extend a research lab session
+      tags:
+      - labs
+  /sessions/{id}/keepalive:
+    post:
+      description: Owner-only presence ping (sent by the browser while the lab tab
+        is visible) that resets the idle timeout. Does not touch the hard cap.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: idle clock reset (or session already gone)
+          schema:
+            type: string
+        "403":
+          description: forbidden - not the owner
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Keep a running session's idle timer alive
+      tags:
+      - sessions
+  /sessions/{id}/topology:
+    get:
+      description: |-
+        The student-facing map: their session's disposable nested cluster, plus one opaque node standing for everything outside it. Ownership-gated exactly like the terminal - any other authenticated user gets 403, not a filtered view.
+        Built from the session's nested kubeconfig alone, never from the admin topology. That is structural rather than a filter: the outer cluster's node names, kernel versions, dashboards, signals and other users' sessions never enter the code path, so there is nothing to forget to strip. See internal/topology/scoped.go.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/topology.ScopedTopology'
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "403":
+          description: forbidden - not this session's owner
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Get the topology of your own lab cluster
+      tags:
+      - labs
+securityDefinitions:
+  BearerAuth:
+    description: Bearer <token> (see internal/api/auth.go). The same JWT also works
+      as an HttpOnly cookie for browser requests, but that can't be expressed as a
+      header-based security scheme here.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

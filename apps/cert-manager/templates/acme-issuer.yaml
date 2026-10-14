@@ -1,0 +1,32 @@
+{{- if eq .Values.issuer.type "acme" }}
+# Real environments only - needs the actual public domain to be reachable
+# for HTTP-01 validation. .Values.issuer.acme.server
+# defaults to Let's Encrypt's staging endpoint on purpose: swap to the prod
+# endpoint deliberately, once, when it's time - not something to default to.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.clusterIssuerName }}
+spec:
+  acme:
+    server: {{ .Values.issuer.acme.server }}
+    email: {{ required "issuer.acme.email is required when issuer.type=acme" .Values.issuer.acme.email }}
+    privateKeySecretRef:
+      name: {{ .Values.clusterIssuerName }}-account-key
+    solvers:
+      {{- if eq .Values.issuer.acme.solver "dns01" }}
+      # DNS-01 via Cloudflare: proves ownership with a TXT record instead of an
+      # HTTP hit, so it keeps working behind the Cloudflare proxy (orange cloud)
+      # where HTTP-01 can't reach the origin. Needs a Cloudflare API token
+      # (Zone:DNS:Edit) in a Secret in the cert-manager namespace.
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: {{ required "issuer.acme.cloudflare.apiTokenSecretName is required for dns01" .Values.issuer.acme.cloudflare.apiTokenSecretName }}
+              key: {{ .Values.issuer.acme.cloudflare.apiTokenSecretKey }}
+      {{- else }}
+      - http01:
+          ingress:
+            ingressClassName: {{ .Values.issuer.acme.ingressClass }}
+      {{- end }}
+{{- end }}

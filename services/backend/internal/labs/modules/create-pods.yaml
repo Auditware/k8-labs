@@ -1,0 +1,154 @@
+# create-pods - privilege escalation by running a pod as a stronger identity.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev`, holding `create` on pods (plus reading
+# pod logs) in the `ops` namespace, but no read access anywhere. A powerful
+# service account, `ops/builder`, can read the flag Secret in `production`. The
+# student creates a pod that runs AS builder and prints the flag to its logs.
+#
+# The lesson: `create pods` is not a harmless "can schedule work" grant. Nothing
+# stops the creator from setting the new pod's serviceAccountName to any account
+# in the namespace, so the pod boots with that account's mounted token - and
+# whoever created it reads whatever that account can. What an EDR should observe:
+# a dev-namespace identity creating a pod in ops that binds a privileged service
+# account it does not own.
+#
+# Airgap note: the pod the STUDENT creates must use an image already present in
+# the nested cluster - the baked `k8labs-foothold` (imagePullPolicy: Never) - or
+# it never starts (the nested cluster pulls nothing). The course teaches this.
+# No new image, no secrets. The flag is bait (see services/labs/_template).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+  # Pod Security 'baseline' enforce: the foothold holds `create pods` here, and
+  # without this it could schedule a hostPath:/ (or privileged) pod and read the
+  # node's admin kubeconfig off disk - cluster-admin in one step, skipping the
+  # intended "run a pod AS builder" lesson. Baseline rejects host access /
+  # privilege at admission but still allows a plain pod with any serviceAccountName
+  # (the intended solution runs an unprivileged pod as builder), so the lab is
+  # unchanged for the student who solves it the taught way.
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{create_pods_runs_your_code_as_any_service_account}"
+  note: "A pod you created read this - because you told it to run as builder."
+---
+# The foothold's identity: it can create pods (and read their logs) in ops, and
+# nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+  namespace: dev
+---
+# The powerful identity that lives in ops. A legitimate build account that reads
+# production secrets - the flaw is not that it exists, it is that the foothold
+# can launch a pod wearing it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: builder
+  namespace: ops
+---
+# PLANTED FLAW: the foothold is granted create on pods, plus get on pods and
+# their logs so it can retrieve output. `create pods` implies the ability to set
+# the pod's serviceAccountName to any account in the namespace - there is no
+# separate permission gating that choice.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-creator
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer-creates-ops-pods
+  namespace: ops
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: pod-creator
+  apiGroup: rbac.authorization.k8s.io
+---
+# builder's legitimate power: read secrets in production.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prod-secret-reader
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: builder-reads-prod-secrets
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: builder
+    namespace: ops
+roleRef:
+  kind: Role
+  name: prod-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches. Runs as deployer with its
+# token mounted, ships kubectl (the baked foothold image).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: create-pods
+  serviceAccountName: deployer
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

@@ -1,0 +1,50 @@
+# Traefik middlewares for prod hardening (gated by traefikMiddleware.enabled so
+# local/k3d - which shares the same Traefik - is unaffected; enabled in prod via
+# the ArgoCD Application helm.parameters). Defined in THIS chart and referenced
+# only by this chart's Ingresses, so there's no cross-chart "referenced
+# middleware missing -> Traefik 500" race.
+{{- if .Values.traefikMiddleware.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "backend.fullname" . }}-security-headers
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    # SAMEORIGIN, not DENY: the admin dashboard iframes the reverse-proxied
+    # Grafana/ArgoCD (same origin), which DENY would break.
+    customFrameOptionsValue: SAMEORIGIN
+    contentTypeNosniff: true
+    referrerPolicy: strict-origin-when-cross-origin
+    # CSP is intentionally omitted for now - a strict policy breaks Grafana/
+    # ArgoCD/React inline scripts; it needs per-app tuning (fast-follow).
+{{- if .Values.traefikMiddleware.adminAllowCIDRs }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "backend.fullname" . }}-admin-ipallowlist
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+spec:
+  # Only these source IPs may even reach the admin paths (/admin/*, /ui, /v1) -
+  # defense in depth on top of the backend's existing admin-auth 401. Direct
+  # (grey-cloud) client IP today; if you enable the Cloudflare proxy, add an
+  # ipStrategy depth so the real client IP is read from X-Forwarded-For.
+  ipAllowList:
+    sourceRange:
+      {{- toYaml .Values.traefikMiddleware.adminAllowCIDRs | nindent 6 }}
+    {{- if gt (int .Values.traefikMiddleware.adminAllowIPDepth) 0 }}
+    # Behind Cloudflare: read the real client IP from X-Forwarded-For instead of
+    # the direct peer (which is Cloudflare's edge). depth=1 = the visitor IP
+    # Cloudflare sets; Cloudflare strips any client-supplied XFF, and the
+    # entrypoint only trusts XFF from Cloudflare's ranges, so it can't be spoofed.
+    ipStrategy:
+      depth: {{ .Values.traefikMiddleware.adminAllowIPDepth }}
+    {{- end }}
+{{- end }}
+{{- end }}

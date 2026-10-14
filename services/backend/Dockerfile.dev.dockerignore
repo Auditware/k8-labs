@@ -1,0 +1,8 @@
+# Overrides .dockerignore for Dockerfile.dev specifically (BuildKit checks
+# for <dockerfile-name>.dockerignore first) - Dockerfile.dev's entire point
+# is COPYing bin/backend in, so it can't be excluded here the way it
+# correctly is for the real Dockerfile (which compiles inside Docker and
+# never wants a stray local bin/ in its build context).
+.git
+*.env
+.env*

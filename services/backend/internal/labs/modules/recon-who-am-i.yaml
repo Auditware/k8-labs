@@ -1,0 +1,147 @@
+# recon-who-am-i - the second recon lab: identity and permission enumeration
+# against the API server, using only the mounted token and curl.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session.
+# The student's terminal attaches to the `foothold` pod in `dev`. kubectl is
+# stripped at start - a real compromised workload has none - so every move is a
+# plain HTTPS call to https://kubernetes.default.svc with the service-account
+# token and the mounted CA cert.
+#
+# The planted flaw: the `app` service account was quietly granted `get` on
+# secrets in the `billing` namespace (a RoleBinding that outlived whatever
+# needed it). Nothing about the pod advertises this - only asking the API, via a
+# SelfSubjectRulesReview scoped to billing, reveals it. The student enumerates
+# namespaces, probes their own permissions in each, finds the stray grant, and
+# reads the flag Secret with it.
+#
+# What an EDR should observe: a dev-namespace identity issuing SelfSubjectRules
+# Reviews across namespaces (self-enumeration is noisy and rarely legitimate),
+# then a get on a billing Secret it has no business reading.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: billing
+---
+# A decoy namespace with a secret the foothold canNOT read, so enumeration is a
+# real discrimination task: the student has to find WHICH namespace actually
+# grants them access, not just read the first secret they see.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+# The objective: the foothold's stray billing grant reaches this.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: revenue-report
+  namespace: billing
+type: Opaque
+stringData:
+  flag: "k8labs{selfsubjectrulesreview_reveals_the_grant_you_hold}"
+  note: "If a dev service account can read this, its billing RoleBinding is a mistake."
+---
+# The decoy: a production secret the foothold has no grant for. Trying to read it
+# returns 403 - which teaches that enumeration, not guessing, is what finds the
+# one namespace that works.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-root
+  namespace: production
+type: Opaque
+stringData:
+  password: "not-the-flag-you-cannot-read-this-one"
+---
+# The foothold's identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  namespace: dev
+---
+# A minimal grant so the student can enumerate namespaces over the API
+# (GET /api/v1/namespaces). Listing namespaces is ordinary recon; it opens no
+# path to any secret by itself - it just tells you where to point the next
+# question. The vulnerability is the billing grant below, not this.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: namespace-lister
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: namespace-lister
+subjects:
+  - kind: ServiceAccount
+    name: app
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: namespace-lister
+  apiGroup: rbac.authorization.k8s.io
+---
+# PLANTED FLAW: a namespaced Role granting secret read in billing...
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: billing-secret-reader
+  namespace: billing
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+# ...bound to the dev foothold's service account. This is the stray grant the
+# SelfSubjectRulesReview surfaces and nothing else does.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: billing-secret-reader
+  namespace: billing
+subjects:
+  - kind: ServiceAccount
+    name: app
+    namespace: dev
+roleRef:
+  kind: Role
+  name: billing-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: who-am-i
+  serviceAccountName: app
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      # kubectl-free: this lab is entirely curl-against-the-API on purpose.
+      command: ["sh", "-c", "rm -f /usr/local/bin/kubectl /usr/bin/kubectl 2>/dev/null; exec sleep infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

@@ -1,0 +1,37 @@
+# Local-dev-only Grafana values - provisions Loki as a datasource
+# automatically (see docs/architecture/environments.md for the install
+# command this gets passed to via `helm install -f`).
+#
+# adminUser/adminPassword: admin/admin here is the same local-only
+# convenience as the backend's own admin seed (see apps/backend/values.yaml's
+# adminSeed) - never a real credential, never used outside this cluster.
+# A real environment would set these via Vault instead, same split as
+# everything else documented in this same doc.
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.observability.svc.cluster.local:3100
+        isDefault: true
+# LOCAL default only. Prod bootstrap.sh overrides these with
+# --set admin.existingSecret=grafana-admin (creds from the git-secret'd
+# secrets/grafana.env), so prod never ships admin/admin and a redeploy keeps
+# the real password. Never put a real password here - this file is plaintext
+# in git.
+adminUser: admin
+adminPassword: admin
+
+# Serves correctly under the admin dashboard's reverse-proxied
+# /admin/grafana/ path (see internal/api/adminproxy.go) - Grafana natively
+# supports this (unlike Vault, which doesn't and can't be proxied under a
+# path prefix at all - see docs/architecture/environments.md). Verified
+# for real: every asset request under /admin/grafana/ actually resolves,
+# not just the initial page load.
+grafana.ini:
+  server:
+    domain: localhost
+    root_url: "%(protocol)s://%(domain)s/admin/grafana/"
+    serve_from_sub_path: true

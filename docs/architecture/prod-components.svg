@@ -1,0 +1,78 @@
+<svg width="680" viewBox="0 0 680 620" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Production full component diagram</title>
+<desc>Every component of the production environment. External/managed: browser, Cloudflare DNS and CDN, PostHog analytics, GitHub repo with CI pushing to GHCR, and Hetzner (a Cloud CX33 control plane provisioned by Terraform plus a bare-metal AX41 joined via kubeadm). The control-plane node runs edge and app (Traefik, frontend, backend, postgres), GitOps and secrets (cert-manager, Vault, ArgoCD), observability (Loki, Grafana, Alloy), and platform (Cilium, Tetragon, the kubeadm control plane). The bare-metal AX41 labs node runs each session as a session-runner pod - a disposable nested k3s cluster wrapped in a Kata/Firecracker microVM - behind a default-deny NetworkPolicy.</desc>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .th { font-size: 14px; font-weight: 500; fill: #1a1d22; }
+  .ts { font-size: 12px; fill: #4b525c; }
+  .box { fill: #f5f5f6; stroke: #c7cbd1; stroke-width: 0.5; }
+  .c-blue   rect { fill: #E6F1FB; stroke: #185FA5; }
+  .c-purple rect { fill: #EEEDFE; stroke: #534AB7; }
+  .c-teal   rect { fill: #E1F5EE; stroke: #0F6E56; }
+  .c-gray   rect { fill: #F1EFE8; stroke: #5F5E5A; }
+  .c-amber  rect { fill: #FAEEDA; stroke: #854F0B; }
+  .c-coral  rect { fill: #FAECE7; stroke: #993C1D; }
+  .arr { stroke: #4b525c; stroke-width: 1.5; fill: none; }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="#4b525c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="680" height="620" fill="#ffffff"/>
+
+<text class="th" x="30" y="26">Prod - full components (kubeadm 2-node · k8labs.example.com)</text>
+
+<g class="c-gray"><rect x="30" y="38" width="620" height="76" rx="10" stroke-width="0.5"/></g>
+<text class="ts" x="42" y="56">External / managed</text>
+<rect class="box" x="44" y="64" width="112" height="42" rx="6"/><text class="th" x="100" y="81" text-anchor="middle" dominant-baseline="central">Browser</text><text class="ts" x="100" y="97" text-anchor="middle" dominant-baseline="central">user</text>
+<rect class="box" x="166" y="64" width="112" height="42" rx="6"/><text class="th" x="222" y="81" text-anchor="middle" dominant-baseline="central">Cloudflare</text><text class="ts" x="222" y="97" text-anchor="middle" dominant-baseline="central">DNS/CDN</text>
+<rect class="box" x="288" y="64" width="112" height="42" rx="6"/><text class="th" x="344" y="81" text-anchor="middle" dominant-baseline="central">PostHog</text><text class="ts" x="344" y="97" text-anchor="middle" dominant-baseline="central">analytics</text>
+<rect class="box" x="410" y="64" width="112" height="42" rx="6"/><text class="th" x="466" y="81" text-anchor="middle" dominant-baseline="central">GitHub</text><text class="ts" x="466" y="97" text-anchor="middle" dominant-baseline="central">CI → GHCR</text>
+<rect class="box" x="532" y="64" width="106" height="42" rx="6"/><text class="th" x="585" y="81" text-anchor="middle" dominant-baseline="central">Hetzner</text><text class="ts" x="585" y="97" text-anchor="middle" dominant-baseline="central">Cloud + Robot</text>
+
+<line x1="222" y1="114" x2="240" y2="167" class="arr" marker-end="url(#arrow)"/>
+<text class="ts" x="196" y="145">TLS</text>
+<line x1="466" y1="114" x2="560" y2="167" class="arr" marker-end="url(#arrow)"/>
+<text class="ts" x="470" y="145">images/sync</text>
+
+<g class="c-blue"><rect x="30" y="160" width="620" height="266" rx="12" stroke-width="0.5"/></g>
+<text class="th" x="44" y="182">Control-plane hosts - Hetzner Cloud VMs · runc</text>
+
+<text class="ts" x="40" y="224">edge/app</text>
+<g class="c-blue"><rect x="140" y="200" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="217" y="217" text-anchor="middle">Traefik</text><text class="ts" x="217" y="233" text-anchor="middle">ingress + TLS</text></g>
+<g class="c-blue"><rect x="311" y="200" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="388" y="217" text-anchor="middle">Frontend</text><text class="ts" x="388" y="233" text-anchor="middle">React SPA (pod)</text></g>
+<g class="c-blue"><rect x="482" y="200" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="559" y="213" text-anchor="middle">Backend · Postgres</text><text class="ts" x="559" y="229" text-anchor="middle">:8080 · :5432</text></g>
+
+<text class="ts" x="40" y="279">gitops</text>
+<g class="c-purple"><rect x="140" y="255" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="217" y="272" text-anchor="middle">cert-manager</text><text class="ts" x="217" y="288" text-anchor="middle">Let's Encrypt</text></g>
+<g class="c-purple"><rect x="311" y="255" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="388" y="272" text-anchor="middle">Vault</text><text class="ts" x="388" y="288" text-anchor="middle">+injector (real KV)</text></g>
+<g class="c-purple"><rect x="482" y="255" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="559" y="272" text-anchor="middle">ArgoCD</text><text class="ts" x="559" y="288" text-anchor="middle">auto-sync</text></g>
+
+<text class="ts" x="40" y="334">obs</text>
+<g class="c-teal"><rect x="140" y="310" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="217" y="327" text-anchor="middle">Loki</text><text class="ts" x="217" y="343" text-anchor="middle">logs</text></g>
+<g class="c-teal"><rect x="311" y="310" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="388" y="327" text-anchor="middle">Grafana</text><text class="ts" x="388" y="343" text-anchor="middle">dashboards</text></g>
+<g class="c-teal"><rect x="482" y="310" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="559" y="327" text-anchor="middle">Alloy</text><text class="ts" x="559" y="343" text-anchor="middle">collector</text></g>
+
+<text class="ts" x="40" y="389">platform</text>
+<g class="c-gray"><rect x="140" y="365" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="217" y="382" text-anchor="middle">Cilium</text><text class="ts" x="217" y="398" text-anchor="middle">CNI + NetworkPolicy</text></g>
+<g class="c-gray"><rect x="311" y="365" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="388" y="382" text-anchor="middle">Tetragon</text><text class="ts" x="388" y="398" text-anchor="middle">eBPF EDR</text></g>
+<g class="c-gray"><rect x="482" y="365" width="154" height="44" rx="6" stroke-width="0.5"/><text class="th" x="559" y="382" text-anchor="middle">kubeadm CP</text><text class="ts" x="559" y="398" text-anchor="middle">etcd · apiserver</text></g>
+
+<line x1="90" y1="426" x2="90" y2="449" class="arr" marker-end="url(#arrow)"/>
+<text class="ts" x="102" y="442">backend provisions → bare-metal labs (nodeSelector + RuntimeClass)</text>
+
+<g class="c-amber"><rect x="30" y="450" width="620" height="150" rx="12" stroke-width="0.5"/></g>
+<text class="th" x="44" y="472">Bare-metal labs node - AX41 · Kata/Firecracker</text>
+<text class="ts" x="40" y="536">labs-runners</text>
+<g class="c-coral"><rect x="140" y="490" width="440" height="86" rx="8" stroke-width="0.5"/></g>
+<text class="th" x="360" y="510" text-anchor="middle">session-runner pod · Kata/Firecracker microVM</text>
+<g class="c-coral"><rect x="164" y="522" width="392" height="46" rx="6"/><text class="th" x="360" y="540" text-anchor="middle">nested k3s (disposable)</text><text class="ts" x="360" y="557" text-anchor="middle">lab pods · the session's attack target</text></g>
+<text class="ts" x="44" y="592">Wall 1 microVM kernel boundary + Wall 2 default-deny NetworkPolicy = isolation between tenants</text>
+
+<g class="c-blue"><rect x="30" y="606" width="11" height="11" rx="3" stroke-width="0.5"/></g><text class="ts" x="46" y="615">edge/app</text>
+<g class="c-purple"><rect x="130" y="606" width="11" height="11" rx="3" stroke-width="0.5"/></g><text class="ts" x="146" y="615">gitops/secrets</text>
+<g class="c-teal"><rect x="270" y="606" width="11" height="11" rx="3" stroke-width="0.5"/></g><text class="ts" x="286" y="615">observability</text>
+<g class="c-gray"><rect x="400" y="606" width="11" height="11" rx="3" stroke-width="0.5"/></g><text class="ts" x="416" y="615">platform</text>
+<g class="c-coral"><rect x="500" y="606" width="11" height="11" rx="3" stroke-width="0.5"/></g><text class="ts" x="516" y="615">session pod + nested k3s</text>
+</svg>

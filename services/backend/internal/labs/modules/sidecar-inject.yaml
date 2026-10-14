@@ -1,0 +1,189 @@
+# sidecar-inject - injecting a container into a workload you can patch.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev`, able to patch Deployments in `ops` but
+# read nothing. A Deployment there, `payments`, runs its pods as a service
+# account that can read the flag Secret in `production`. The student patches the
+# Deployment to add a sidecar container that reads the flag and logs it.
+#
+# The lesson: you cannot add a container to a running Pod (its container list is
+# immutable), but you CAN patch the Deployment that owns it - and the rolled pods
+# come up with your extra container, sharing the pod's mounted service-account
+# token. `patch deployments` is therefore code execution inside every workload it
+# covers, under that workload's identity. What an EDR should observe: a workload
+# spec gaining an unexpected container whose image and command do not match the
+# app.
+#
+# Airgap note: the injected container must use an image already in the nested
+# cluster - the baked `k8labs-foothold` (imagePullPolicy: Never). The course
+# teaches this. No new image, no secrets. The flag is bait (see _template).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+  # Pod Security 'baseline' enforce: the foothold can `patch deployments` here, so
+  # without this it could patch a hostPath:/ volume + container into the payments
+  # Deployment and read the node's admin kubeconfig off disk - cluster-admin in one
+  # step, skipping the intended "inject a sidecar that borrows the payments token"
+  # lesson. Baseline rejects host access / privilege at admission but still admits
+  # a plain injected sidecar (the intended solution), so the payments Deployment and
+  # the taught solve path are unaffected.
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{patch_a_deployment_to_inject_a_sidecar_and_borrow_its_token}"
+  note: "A container you injected read this - it ran inside the payments pod, as payments."
+---
+# The foothold's identity: it can patch Deployments (and read pods/logs) in ops,
+# and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patcher
+  namespace: dev
+---
+# The workload's identity: the payments app reads production secrets as part of
+# its job. Legitimate - the flaw is that the foothold can rewrite its Deployment.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payments
+  namespace: ops
+---
+# PLANTED FLAW: the foothold can get/list/patch Deployments in ops, plus read
+# pods and their logs (to retrieve the injected container's output).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-patcher
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patcher-patches-ops-deployments
+  namespace: ops
+subjects:
+  - kind: ServiceAccount
+    name: patcher
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: deployment-patcher
+  apiGroup: rbac.authorization.k8s.io
+---
+# payments' legitimate power: read secrets in production.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prod-secret-reader
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: payments-reads-prod-secrets
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: payments
+    namespace: ops
+roleRef:
+  kind: Role
+  name: prod-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The target workload: a payments Deployment whose pods run as the payments SA
+# with its token mounted. The student injects a sidecar into this. Uses the baked
+# foothold image, so no new image is needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: ops
+  labels:
+    app: payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      serviceAccountName: payments
+      automountServiceAccountToken: true
+      containers:
+        - name: app
+          image: k8labs-foothold:1.31
+          imagePullPolicy: Never
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+---
+# The foothold: where the student's terminal attaches. Runs as patcher with its
+# token mounted, ships kubectl (the baked foothold image).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: sidecar-inject
+  serviceAccountName: patcher
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

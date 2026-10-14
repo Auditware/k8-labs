@@ -1,0 +1,105 @@
+# ns-escape - the first nested-cluster module (namespace/RBAC escape).
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev` and must read a Secret in `production`
+# they were never meant to reach. "Winning" compromises only this throwaway
+# cluster - the microVM + nested cluster are the two walls (see
+# docs/architecture/nested-lab-rewrite.md).
+#
+# The planted flaw: a namespaced service account (dev/analyst) is granted secret
+# read via a *ClusterRoleBinding* instead of a namespaced RoleBinding, so its
+# read reaches EVERY namespace, production included. What the EDR sensor should
+# observe: a dev-namespace identity issuing a get on a production Secret.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+# The namespace the foothold should not be able to reach.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+# The objective: read this from the dev foothold.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{cross_ns_secret_read_via_overbroad_clusterrolebinding}"
+  note: "Reading this from the dev foothold means the ClusterRoleBinding is too wide."
+---
+# The foothold's identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analyst
+  namespace: dev
+---
+# PLANTED FLAW (1/2): a ClusterRole granting secret read. A ClusterRole is
+# cluster-scoped; whether it applies to one namespace or all depends entirely on
+# how it's BOUND (below).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: analyst-secret-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+# PLANTED FLAW (2/2): binding it with a ClusterRoleBinding. The intent was
+# "analyst can read secrets in dev" - which a namespaced Role + RoleBinding
+# would have done. A ClusterRoleBinding grants the ClusterRole in EVERY
+# namespace, so dev/analyst can now read production/flag too. This one line is
+# the whole vulnerability.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: analyst-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: analyst
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: analyst-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches (EntryNamespace/EntryPod
+# in the module registry). Runs as the analyst SA with its token mounted, and
+# ships kubectl (alpine/k8s) so the student can enumerate and exploit RBAC.
+# Named deterministically ("foothold") so the terminal bridge can find it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  # Sets the shell's \h (prompt reads root@ns-escape). Cosmetic, distinct from
+  # the pod name so EntryPod / RBAC references stay put.
+  hostname: ns-escape
+  serviceAccountName: analyst
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      # The baked foothold image (services/session-runner/foothold) - preloaded
+      # into every nested cluster on boot, so Never (it's not on any registry).
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

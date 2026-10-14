@@ -1,0 +1,42 @@
+# The frontend as a real pod (prod) - locally it's `bun dev`, so this
+# Application only ever runs in prod. Image + host come from the chart's prod
+# defaults (ghcr.io/auditware/frontend, k8labs.example.com). sync-wave 1: after the
+# app-tier prerequisites (postgres, labs, issuers in wave 0).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/frontend
+    # Prod-only pull secret for the private GHCR image (see backend.yaml).
+    helm:
+      parameters:
+        - name: imagePullSecrets[0].name
+          value: ghcr-pull
+        # Pin to the exact CI build to deploy. values.yaml defaults to :latest,
+        # but latest + pullPolicy IfNotPresent never re-pulls a same-tag rebuild
+        # (nodes keep the cached layer), so a code roll needs a distinct tag.
+        # CI publishes both the FULL and 7-char short git SHA alongside :latest;
+        # pin either. Reproducible + revertable: git blame shows what shipped.
+        - name: image.tag
+          value: "b652ce5"
+        # Prod hardening: security headers (HSTS, XFO SAMEORIGIN, nosniff, ...).
+        - name: traefikMiddleware.enabled
+          value: "true"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  # Auto-sync (prod-only ArgoCD; see postgres.yaml for the full rationale).
+  # selfHeal reverts drift, prune off so nothing is auto-deleted. Deploys stay
+  # gated by the pin-bump commit.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

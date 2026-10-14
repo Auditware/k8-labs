@@ -1,0 +1,106 @@
+# recon-first-contact - the first recon lab: situational awareness on a fresh
+# foothold, before any network or API call.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student's terminal
+# attaches to the `foothold` pod in `dev`. "Winning" compromises only this
+# throwaway cluster (see docs/architecture/nested-lab-rewrite.md).
+#
+# The planted flaw: the app was wired to a Secret through an environment
+# variable (a secretKeyRef), so a database credential the workload never needed
+# to expose is sitting in `env` for anyone who lands a shell. The lab teaches the
+# very first move of recon - read what the pod already handed you - and the flag
+# IS that leaked value. No API, no network, no kubectl: this foothold strips
+# kubectl at start on purpose, because a real compromised workload has none and
+# the whole recon track builds the habit of working without it.
+#
+# What an EDR should observe: nothing on the wire at all - which is the lesson.
+# Environment-variable secret exposure leaves no audit trail; the only defence is
+# not putting the secret there.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+# The planted flaw: a Secret consumed as an environment variable. The intent was
+# "the app needs the orders database password" - but injecting it via
+# `secretKeyRef` (below) puts the cleartext value into the pod's environment,
+# where `env`, `/proc/<pid>/environ`, and any child process can read it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-db
+  namespace: dev
+type: Opaque
+stringData:
+  # This value is the flag: capturing it is just reading your own environment.
+  password: "k8labs{the_pod_handed_you_a_secret_in_its_own_env}"
+  host: "orders-db.dev.svc.cluster.local"
+---
+# The foothold's identity. Deliberately powerless - it can read nothing over the
+# API. This lab is not about RBAC; the point is that the pod leaked a secret to
+# itself before the API is ever involved.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  namespace: dev
+---
+# The foothold: where the student's terminal attaches (EntryNamespace/EntryPod in
+# the module registry). Named deterministically ("foothold") so the terminal
+# bridge can find it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  # Sets the shell's \h so the prompt reads root@first-contact - cosmetic, and
+  # distinct from the pod name so EntryPod / references stay put.
+  hostname: first-contact
+  serviceAccountName: app
+  # The token is still mounted: "your identity is a file" is one of the things
+  # the student inventories, even though this lab never spends it on the API.
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      # The baked foothold image (services/session-runner/foothold) - preloaded
+      # into every nested cluster on boot, so Never (it's not on any registry).
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      # Strip kubectl before handing over the shell. The recon track is
+      # deliberately kubectl-free: a compromised workload has curl, not a
+      # configured kubectl, and removing it forces the authentic tradecraft.
+      # Removing it here (not baking a separate image) keeps the airgapped
+      # nested cluster unchanged - same preloaded image, one less binary.
+      command: ["sh", "-c", "rm -f /usr/local/bin/kubectl /usr/bin/kubectl 2>/dev/null; exec sleep infinity"]
+      env:
+        # THE LEAK: the orders database password, in cleartext, in the
+        # environment. This is what the student finds with `env`.
+        - name: ORDERS_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: orders-db
+              key: password
+        # Ordinary-looking config, so the leak sits among plausible neighbours
+        # rather than standing alone - recon is noticing which one matters.
+        - name: ORDERS_DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: orders-db
+              key: host
+        - name: APP_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

@@ -1,0 +1,123 @@
+# rolebinding-escalate - self-granting a powerful role (RBAC).
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student starts in
+# the `foothold` pod in namespace `dev`, holding the ability to create
+# RoleBindings in `production` and to `bind` one specific powerful ClusterRole.
+# They bind that role to their own identity and read the flag Secret.
+#
+# The lesson - and the subtlety that makes this lab worth doing - is Kubernetes'
+# privilege-escalation prevention. You cannot normally create a binding that
+# grants permissions you do not already hold; the API server rejects it with
+# "attempting to grant RBAC permissions not currently held". The escape hatch is
+# the `bind` verb (or `escalate`) on the referenced role. THIS is the planted
+# flaw: the foothold is granted `bind` on `secret-admin`, which defeats the check
+# and lets a powerless account award itself a powerful role. What an EDR should
+# observe: an identity creating a RoleBinding that names itself as subject and a
+# role far above its own.
+#
+# No new image, no secrets: same nested shape as ns-escape. The flag is bait
+# (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: production
+type: Opaque
+stringData:
+  flag: "k8labs{bind_verb_defeats_the_rbac_escalation_check}"
+  note: "You granted yourself secret-admin - the bind verb let you write a check you could not cash before."
+---
+# The foothold's identity: it can create RoleBindings and bind one role, but
+# holds no secret access of its own.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-binder
+  namespace: dev
+---
+# The powerful ClusterRole the student will award themselves: read secrets. The
+# role is not the flaw - being allowed to BIND it, without holding it, is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: secret-admin
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+# The foothold's grants. Two rules:
+#   1. create/get/list RoleBindings in the rbac API group.
+#   2. PLANTED FLAW: the `bind` verb on the secret-admin ClusterRole. Without
+#      this, rule 1 alone is inert - the escalation-prevention check blocks
+#      binding a role whose permissions the account lacks. `bind` is exactly the
+#      permission that says "you may hand out this role even though you do not
+#      hold it", so it is what turns "can create bindings" into "can self-grant".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rolebinding-author
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["secret-admin"]
+---
+# Bind the author role to the foothold, scoped to production (a RoleBinding, so
+# the create-rolebindings and bind powers apply in production - where the flag
+# is). The single grant of `bind` inside rolebinding-author is the whole flaw.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sa-binder-can-author
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: sa-binder
+    namespace: dev
+roleRef:
+  kind: ClusterRole
+  name: rolebinding-author
+  apiGroup: rbac.authorization.k8s.io
+---
+# The foothold: where the student's terminal attaches. Runs as sa-binder with its
+# token mounted, ships kubectl (the baked foothold image).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: rolebinding-escalate
+  serviceAccountName: sa-binder
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

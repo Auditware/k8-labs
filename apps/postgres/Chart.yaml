@@ -1,0 +1,6 @@
+apiVersion: v2
+name: postgres
+description: Catalog/session Postgres instance. Single instance, no HA yet.
+type: application
+version: 0.1.0
+appVersion: "16"

@@ -1,0 +1,42 @@
+// Grafana Alloy config (River). Collects every container's stdout across
+// the cluster via the Kubernetes API (loki.source.kubernetes) - no
+// hostPath mount of /var/log/pods needed, sidesteps any node-filesystem
+// permission questions entirely. This is also how Tetragon's events reach
+// Loki: its own export-stdout sidecar container (see apps/tetragon/)
+// already dumps every event as JSON to its stdout, so it's picked up by
+// this same generic pipeline, tagged by pod/namespace/container like any
+// other log - no separate Tetragon-specific config needed here.
+//
+// See docs/architecture/environments.md for the exact install command
+// this file gets passed to (--set-file alloy.configMap.content=...).
+discovery.kubernetes "pods" {
+  role = "pod"
+}
+
+discovery.relabel "pods" {
+  targets = discovery.kubernetes.pods.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label  = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label  = "container"
+  }
+}
+
+loki.source.kubernetes "pods" {
+  targets    = discovery.relabel.pods.output
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+  }
+}

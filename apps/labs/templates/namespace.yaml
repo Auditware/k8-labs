@@ -1,0 +1,14 @@
+# The session-runner namespace - PodSecurity "privileged" because the runner pod
+# is privileged (runc, local) or high-capability (Kata, prod). Holds only runner
+# pods; lab content lives inside the nested clusters each runner boots, governed
+# by that cluster's own PSA. See values.yaml.
+#
+# This is the only lab namespace left: the restricted/baseline split existed for
+# the legacy single-pod shape, which was removed (see
+# docs/architecture/lab-session-rewrite.md, F1).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.runnerNamespace }}
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

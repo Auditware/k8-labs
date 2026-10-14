@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backend.fullname" . }}
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "backend.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" . | nindent 8 }}
+      annotations:
+        # ConfigMap/Secret changes alone don't trigger a rollout - envFrom
+        # is read once at container start, so a `helm upgrade` that only
+        # changes e.g. config.labsImageTag would otherwise leave the old
+        # pod running with stale env indefinitely. Found by testing an
+        # image-tag bump that silently never took effect. Checksums here
+        # change the pod template whenever either does, forcing a real
+        # rollout.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.vault.enabled }}
+        checksum/local-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.vault.enabled }}
+        # Vault Agent Injector - this is how DATABASE_USER/DATABASE_PASSWORD/
+        # JWT_SIGNING_KEY actually reach this pod: never in this chart, never
+        # in a Secret object, injected at container start into
+        # /vault/secrets/backend, which internal/config/vault.go parses
+        # directly (the image is distroless - no shell to `source` it with).
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: {{ .Values.vault.role | quote }}
+        vault.hashicorp.com/agent-inject-secret-backend: {{ .Values.vault.secretPath | quote }}
+        vault.hashicorp.com/agent-inject-template-backend: |
+          {{- .Values.vault.secretTemplate | nindent 10 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "backend.fullname" . }}
+      automountServiceAccountToken: true   # needed for Vault's k8s auth method - contrast with lab pods, which explicitly do not get this
+      containers:
+        - name: backend
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "backend.fullname" . }}-config
+            {{- if not .Values.vault.enabled }}
+            - secretRef:
+                name: {{ include "backend.fullname" . }}-local
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            # distroless/static-debian12:nonroot's USER is a named user, not
+            # numeric - some runtimes can't resolve that to verify
+            # non-root without an explicit UID, hence this pin (65532 is
+            # that image's fixed nonroot UID). Configurable because Tilt's
+            # dev-only image (Dockerfile.dev, alpine-based - see Tiltfile)
+            # uses a different UID (100) and needs a writable root fs for
+            # live_update's file sync; the real image stays hardened by
+            # default either way.
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10

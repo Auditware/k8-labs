@@ -1,0 +1,237 @@
+# privileged-escape - breaking out of a privileged pod to the node.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student's foothold -
+# the `workstation` pod - is `privileged` and shares the host PID namespace
+# (hostPID). The flag is a root-owned file on the NODE, and the student must
+# actively break out of the container to read it.
+#
+# The lesson: a privileged container with hostPID is barely a container at all.
+# hostPID makes the NODE's init visible as PID 1 inside the pod, and `privileged`
+# grants the capability to reach into another process - so `/proc/1/root` is the
+# node's own root filesystem, readable directly. (nsenter is the classic tool for
+# this, but the foothold image ships no util-linux, and /proc/1/root needs only
+# coreutils - so that is the intended path.) What an EDR should observe: a
+# privileged pod dereferencing another process's root, i.e. touching the node FS.
+#
+# Containment: "the node" is the disposable nested cluster's node - the
+# session-runner's Kata microVM guest in prod, the runner pod's own container
+# under runc locally. Escaping it compromises only the throwaway session, the
+# same containment suid-privesc relies on. No new image; the flag is bait,
+# planted on the node by a privileged initContainer via the same /proc/1/root
+# path (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+# The foothold. hostPID (pod-level) puts the node's init at PID 1 in the pod;
+# each container is `privileged`, which grants the capability to read another
+# process's root via /proc. Together they turn /proc/1/root into the node's
+# filesystem.
+#
+# PLANTED FLAW: privileged + hostPID. No general workload should have either;
+# this pod has both, and that is the whole vulnerability.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  hostname: privileged-escape
+  serviceAccountName: station
+  automountServiceAccountToken: false
+  hostPID: true
+  restartPolicy: Never
+  initContainers:
+    # Plants the flag on the NODE (not in the container image) by writing through
+    # /proc/1/root - the node init's root filesystem - the same door the student
+    # will use. Root-owned, mode 600, so only the escape reveals it.
+    - name: plant-flag
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      securityContext:
+        privileged: true
+      command:
+        - sh
+        - -c
+        - 'mkdir -p /proc/1/root/opt/k8labs && printf "%s\n" "k8labs{privileged_hostpid_proc_1_root_is_the_node}" > /proc/1/root/opt/k8labs/flag.txt && chmod 600 /proc/1/root/opt/k8labs/flag.txt'
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      securityContext:
+        privileged: true
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# ── Defender: the in-guest eBPF sensor (Tetragon) ──────────────────────────
+# Same wiring as modules/ebpf-detect.yaml (the reference eBPF module - see it for
+# the full rationale on each field): a Tetragon DaemonSet + an export-stdout
+# sidecar in the `tetragon` namespace, whose JSON event stream the Defender pane
+# tails (Module.EBPF + DefenderSpec{app=tetragon, container export-stdout} in
+# registry.go). Only the TracingPolicy differs per lab. Here it catches the
+# breakout: a process opening a path under `/proc/1/root` - dereferencing PID 1's
+# (the node init's) root, i.e. reaching out of the container onto the node FS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tetragon
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tetragon
+  namespace: tetragon
+---
+# The detection policy. Hook the openat(2) syscall and match the FILENAME the
+# caller passed - the literal string, before path resolution. This is essential
+# here: `/proc/1/root` is a magic symlink, so the LSM `security_file_permission`
+# hook would report the RESOLVED node path (`/opt/k8labs/flag.txt`) and never see
+# the `/proc/1/root` framing. The syscall arg is the raw string the student
+# typed (`cat /proc/1/root/opt/...`), so a Prefix match on `/proc/1/root` catches
+# the act of dereferencing another process's root - the breakout itself, whatever
+# node file it then reaches. Loaded as a cluster TracingPolicy from
+# --tracing-policy-dir (no operator/CRD needed in a single-tenant nested cluster).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-policies
+  namespace: tetragon
+data:
+  proc-root-access.yaml: |
+    apiVersion: cilium.io/v1alpha1
+    kind: TracingPolicy
+    metadata:
+      name: proc-root-access
+    spec:
+      kprobes:
+        - call: "sys_openat"
+          syscall: true
+          args:
+            - index: 0
+              type: "int"
+            - index: 1
+              type: "string"
+          selectors:
+            - matchArgs:
+                - index: 1
+                  operator: "Prefix"
+                  values:
+                    - "/proc/1/root"
+              matchActions:
+                - action: Post
+                  rateLimit: "2s"
+---
+# Tetragon as a bare DaemonSet (no Helm, no operator, no CRDs) - identical to
+# modules/ebpf-detect.yaml's, which carries the field-by-field rationale. Two
+# containers: `tetragon` loads the eBPF (CO-RE via the guest kernel's BTF) and
+# serves events on a unix gRPC socket; `export-stdout` streams them to stdout as
+# JSON for the Defender pane to tail. --enable-k8s-api=false: the sensor observes
+# by kernel, not pod metadata, so it needs no nested-API access.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tetragon
+  namespace: tetragon
+  labels:
+    app: tetragon
+spec:
+  selector:
+    matchLabels:
+      app: tetragon
+  template:
+    metadata:
+      labels:
+        app: tetragon
+    spec:
+      serviceAccountName: tetragon
+      # eBPF observes every process on the nested node's kernel; hostPID lets
+      # Tetragon resolve their /proc metadata.
+      hostPID: true
+      containers:
+        - name: tetragon
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          securityContext:
+            privileged: true
+          # Mount a FRESH private bpffs + tracefs/debugfs in the sensor's own
+          # mount namespace before starting the agent (privileged), so pinned
+          # maps never touch the shared host /sys/fs/bpf and the kprobe has its
+          # attach point. See ebpf-detect.yaml for why this beats hostPath here.
+          command:
+            - sh
+            - -c
+            - |
+              mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+              mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+              mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+              exec /usr/bin/tetragon \
+                --enable-k8s-api=false \
+                --tracing-policy-dir=/etc/tetragon/tetragon.tp.d \
+                --export-filename=/var/run/cilium/tetragon/tetragon.log \
+                --server-address=unix:///var/run/tetragon/tetragon.sock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+            - name: export-log
+              mountPath: /var/run/cilium/tetragon
+            # subPath projects ONLY the policy file into the dir - a plain
+            # ConfigMap mount adds k8s's `..data` symlink + timestamped dir, which
+            # --tracing-policy-dir walks too, loading the policy twice and killing
+            # the agent ("collection with the key already exists"). See ebpf-detect.
+            - name: tracing-policy
+              mountPath: /etc/tetragon/tetragon.tp.d/proc-root-access.yaml
+              subPath: proc-root-access.yaml
+              readOnly: true
+        - name: export-stdout
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          # Stream events from the agent's gRPC socket to stdout as JSON. The
+          # Defender pane tails THIS container's log.
+          command:
+            - tetra
+            - getevents
+            - -o
+            - json
+            - --server-address
+            - unix:///var/run/tetragon/tetragon.sock
+          volumeMounts:
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+      volumes:
+        # emptyDir, NOT hostPath: the agent mounts its own bpffs here so its
+        # pinned maps never touch the shared host /sys/fs/bpf (local coexistence).
+        - name: bpf-maps
+          emptyDir: {}
+        - name: tetragon-run
+          emptyDir: {}
+        - name: export-log
+          emptyDir: {}
+        - name: tracing-policy
+          configMap:
+            name: tetragon-policies

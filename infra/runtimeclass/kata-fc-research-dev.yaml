@@ -1,0 +1,27 @@
+# RuntimeClass for the unhardened kernel-driver research lab (driver-research-dev).
+# Same Kata+Firecracker microVM as kata-fc, but its containerd handler points at a
+# KASAN+KCOV+BTF+kprobes guest kernel with mitigations OFF (KASLR off, no
+# RANDOM_KMALLOC_CACHES, no freelist hardening) - the guest kernel is the
+# exploitation target, and this profile is for landing a technique. Selected per
+# module by config.runtimeClassFor when Module.Kernel == "research-dev". Default
+# kata-fc and kata-fc-ebpf stay unchanged. See docs/architecture/kasan-research-lab.md.
+#
+# Prereqs on the labs node (a superset of kata-fc's - by hand, like kata-fc-ebpf):
+#   - kata-fc already working (reuses its /opt/kata + devmapper snapshotter).
+#   - the research kernel installed under /opt/kata/share/kata-containers/.
+#   - a containerd runtime handler "kata-fc-research-dev" whose ConfigPath is a
+#     configuration-fc-research-dev.toml identical to configuration-fc.toml except
+#     `kernel =` points at that kernel; containerd restarted once.
+#   - "kata-fc-research-dev" added to allowedRuntimeClasses (apps/labs/values.yaml).
+#
+# No spec.overhead, same reasoning as kata-fc: labs.SessionMemory already reserves
+# the whole measured session cost (heaviest tier - KASAN+eBPF) as the pod request.
+# Grant-only, so concurrency stays low enough to fit the existing node budget.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc-research-dev
+handler: kata-fc-research-dev
+scheduling:
+  nodeSelector:
+    k8labs.io/role: labs

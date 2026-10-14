@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postgres.fullname" . }}
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate # single ReadWriteOnce PVC - never run two pods at once
+  selector:
+    matchLabels:
+      {{- include "postgres.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "postgres.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false # never talks to the k8s API
+      containers:
+        - name: postgres
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | default (include "postgres.fullname" .) }}
+          env:
+            # Subdirectory, not the mount root directly - the postgres
+            # image's initdb refuses to run against a non-empty directory,
+            # and PVC mounts often pre-seed a lost+found entry.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # No capability restrictions here (unlike backend/frontend) - the
+          # stock postgres image's entrypoint needs root to chown/chmod its
+          # data dir and /var/run/postgresql before gosu-ing down to the
+          # postgres user itself; that's the image's own privilege drop.
+          # The username is baked in at Helm template time, not read from
+          # $(POSTGRES_USER) at runtime - found the hard way that a probe's
+          # exec.command doesn't reliably get Kubernetes' $(VAR) substitution
+          # the way container command/args do; it was silently resolving to
+          # nothing, and pg_isready without -U fell back to connecting as
+          # whatever OS user the exec runs as (root), which isn't a real
+          # postgres role - hence "role \"root\" does not exist" over and
+          # over despite the container's own env being correct.
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.credentials.databaseUser | quote }}, "-d", {{ .Values.credentials.databaseName | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.credentials.databaseUser | quote }}, "-d", {{ .Values.credentials.databaseName | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "postgres.fullname" . }}

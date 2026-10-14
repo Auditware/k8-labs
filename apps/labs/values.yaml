@@ -1,0 +1,55 @@
+# The session-runner namespace. Every lab runs its content inside a disposable
+# k3s cluster booted by a session-runner pod, and that pod is privileged (runc,
+# local) or high-capability (Kata, prod), so it needs PodSecurity "privileged".
+# The lab-content pods live INSIDE the nested cluster, governed by its own PSA,
+# so this privileged namespace holds only the runner, never lab content.
+#
+# It gets a default-deny NetworkPolicy with a narrow carve-out (see
+# templates/networkpolicy-runners.yaml) and a tight RBAC binding that also allows
+# pods/exec (fetching the nested kubeconfig - see internal/labs/nested.go).
+#
+# The old restricted/baseline lab namespaces are gone with the legacy single-pod
+# shape - see docs/architecture/lab-session-rewrite.md, F1.
+runnerNamespace: labs-runners
+
+# Who gets the ClusterRole below (bound per-namespace, see templates/rbac.yaml)
+# - must match wherever apps/backend is actually installed (release name
+# changes its ServiceAccount name, see apps/backend/templates/_helpers.tpl).
+backend:
+  serviceAccountName: backend-backend
+  namespace: default
+
+# NetworkPolicy egress carve-out: a runner pod (and therefore the whole nested
+# cluster behind it, whose traffic SNATs to the runner's IP) can reach anything
+# NOT in these two ranges - the real internet, so nested clusters can pull
+# pause/coredns/lab images - but nothing inside them, which is what blocks a
+# nested-cluster attacker from reaching the outer kube-apiserver, Postgres, the
+# Backend, or another session's runner.
+# k3s defaults locally; confirm/override for the real cluster's Cilium
+# native-routing CIDRs.
+network:
+  podCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
+
+# Wall 1 fail-safe. The microVM boundary is applied by ONE field on the runner
+# pod - runtimeClassName - which the Backend attaches only when a RuntimeClass is
+# configured (internal/labs/runner.go's buildRunnerPod). If that config ever goes
+# empty/typo'd on a deploy, the field is omitted, containerd falls back to its
+# DEFAULT runtime (runc) and the pod runs privileged straight on the labs node -
+# no microVM at all, silently, booting even faster. This admission policy makes
+# the apiserver REJECT any runner pod that isn't pinned to a Kata RuntimeClass, so
+# a misconfig fails loud at admission instead of quietly opening the host.
+#
+# OFF by default so local k3d (no Kata; runners legitimately run empty->runc) is
+# not blocked. Prod turns it ON via argocd/applications/labs.yaml. Requires k8s
+# >=1.30 for GA ValidatingAdmissionPolicy (prod is 1.31).
+requireKataRuntimeClass: false
+# The RuntimeClass handlers that count as "inside a microVM". Must match the
+# Backend's labsRuntimeClass / labsRuntimeClassEbpf (apps/backend/values.yaml)
+# and the installed RuntimeClasses (infra/runtimeclass/). A runner pod whose
+# runtimeClassName is none of these is denied.
+allowedRuntimeClasses:
+  - kata-fc
+  - kata-fc-ebpf
+  - kata-fc-research-dev
+  - kata-fc-research-hard

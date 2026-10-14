@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: services/backend/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      # Also the course-content gate: internal/course's tests validate every
+      # lesson file against services/labs/schema/step.schema.json, prove the
+      # schema and the Go parser agree on what to reject, and run the cold-term
+      # and diagram-overlap lints. Content is compiled into the binary, so a
+      # break here would otherwise reach a student as a blank lesson pane.
+      - run: go test ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun run test
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint apps/backend/
+
+  # Build + push only on main - PRs stop at the checks above. Uses the
+  # built-in GITHUB_TOKEN (already scoped to push to this repo's own GHCR
+  # packages) - no separate PAT/secret needed for the registry.
+  build-and-push:
+    needs: [backend, frontend, helm-lint]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      # Publish a 7-char short-SHA tag alongside the full one. Deploys pin a
+      # SHA (see argocd/applications/*.yaml), and `git rev-parse --short` /
+      # `git log --oneline` hand out the short form - so without this tag a
+      # pin to the short SHA is a NotFound imagePull. Both tags now resolve.
+      - name: Compute image vars
+        id: vars
+        run: |
+          echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.service }}:latest
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.service }}:${{ steps.vars.outputs.sha_short }}
+          # Only the frontend build reads these - see
+          # docs/architecture/environments.md's VITE_* build-time note.
+          # STILL TODO: add VITE_GOOGLE_CLIENT_ID/VITE_GITHUB_CLIENT_ID as
+          # real repo secrets in GitHub settings; empty for now just means
+          # the built image's OAuth buttons render disabled, not a failure.
+          build-args: |
+            VITE_GOOGLE_CLIENT_ID=${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+            VITE_GITHUB_CLIENT_ID=${{ secrets.VITE_GITHUB_CLIENT_ID }}
+            GIT_SHA=${{ steps.vars.outputs.sha_short }}
+            VITE_POSTHOG_PROJECT_TOKEN=${{ secrets.VITE_POSTHOG_PROJECT_TOKEN }}
+            VITE_POSTHOG_HOST=${{ secrets.VITE_POSTHOG_HOST }}
+
+  # The session-runner image - the nested-k3s arena every module runs on
+  # (services/session-runner). Separate job from the app images because it needs
+  # a two-step build (the foothold tar, below) that the plain app matrix doesn't.
+  # Locally Tilt builds the same image straight into the k3d registry instead
+  # (see Tiltfile) - this job is the prod supply chain for it.
+  #
+  # There are no per-module lab images any more: a module is a manifest bundle
+  # applied INTO the nested cluster, not a container built from
+  # services/labs/<slug>. The old labs-<slug> matrix entries went away with the
+  # legacy single-pod shape (docs/architecture/lab-session-rewrite.md, F1).
+  lab-images:
+    needs: [helm-lint]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: session-runner
+            context: services/session-runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute image vars
+        id: vars
+        run: |
+          echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # session-runner is a TWO-STEP build: its Dockerfile COPYs
+      # airgap/foothold.tar, a `docker save` artifact that is gitignored (not in
+      # the checkout). Build the foothold image and save it into the context
+      # first, exactly as the Tiltfile does locally. The tag MUST be
+      # k8labs-foothold:1.31 - the nested cluster imports this tar on boot and
+      # ns-escape.yaml references that image with imagePullPolicy: Never, so
+      # a mismatched tag means the foothold pod never starts. Only this matrix
+      # leg needs it; the plain lab images build single-step.
+      - name: Bake foothold into airgap tar (session-runner only)
+        if: ${{ matrix.name == 'session-runner' }}
+        run: |
+          mkdir -p services/session-runner/airgap
+          docker build -t k8labs-foothold:1.31 services/session-runner/foothold
+          docker save k8labs-foothold:1.31 -o services/session-runner/airgap/foothold.tar
+          # research: the kernel-driver research workstation (foothold + gcc/gdb/
+          # pahole toolchain + the target driver/fuzzer sources under /app). FROM
+          # k8labs-foothold, so it MUST build after the foothold step above.
+          # Imported into a nested cluster only when the backend sets
+          # SESSION_RESEARCH=1 (entrypoint.sh), so only the two research labs pay
+          # its ~200 MB. driver-research.yaml references k8labs-research:1.0 with
+          # imagePullPolicy: Never. See docs/architecture/kasan-research-lab.md.
+          docker build -t k8labs-research:1.0 services/session-runner/research
+          docker save k8labs-research:1.0 -o services/session-runner/airgap/research.tar
+          # pause: the pod sandbox image every nested pod needs. Bake it so the
+          # nested cluster is fully airgapped (no session-time pull that stalls
+          # behind the runner egress policy / early-boot DNS). Tag must match
+          # k3s v1.31's sandbox image (rancher/mirrored-pause:3.6).
+          docker pull rancher/mirrored-pause:3.6
+          docker save rancher/mirrored-pause:3.6 -o services/session-runner/airgap/pause.tar
+          # tetragon: the in-guest eBPF sensor for eBPF modules (Module.EBPF).
+          # Baked into the shared runner image but imported into a nested cluster
+          # only when the backend sets SESSION_EBPF=1 (entrypoint.sh), so normal
+          # labs keep fast boot. ebpf-detect.yaml references this exact tag
+          # with imagePullPolicy: Never. See docs/architecture/ebpf-per-session.md.
+          docker pull quay.io/cilium/tetragon:v1.7.0
+          docker save quay.io/cilium/tetragon:v1.7.0 -o services/session-runner/airgap/tetragon.tar
+          # coredns: k3s deploys CoreDNS as cluster DNS, but the airgapped nested
+          # cluster can't pull it - without this it ErrImagePulls and every nested
+          # cluster runs with NO DNS, breaking any lab that resolves a Service by
+          # name (the recon track) or hits kubernetes.default.svc. Imported for
+          # every session (not gated). Ref tracks the k3s version in
+          # services/session-runner/Dockerfile (v1.31.5-k3s1 -> coredns 1.12.0).
+          docker pull rancher/mirrored-coredns-coredns:1.12.0
+          docker save rancher/mirrored-coredns-coredns:1.12.0 -o services/session-runner/airgap/coredns.tar
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.name }}:latest
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.name }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ matrix.name }}:${{ steps.vars.outputs.sha_short }}

@@ -1,0 +1,57 @@
+{{- if .Values.requireKataRuntimeClass }}
+# Wall 1 fail-safe (see values.yaml requireKataRuntimeClass). The microVM
+# boundary rides on one field - the runner pod's runtimeClassName - and the
+# Backend attaches it only when a RuntimeClass is configured. A config regression
+# omits it, containerd falls back to runc, and the session runs privileged on the
+# bare-metal labs node with NO VM isolation, silently. This policy makes the
+# apiserver refuse that pod so the failure is loud (session-create errors) instead
+# of a silent hole. Native ValidatingAdmissionPolicy (GA in k8s 1.30; prod is
+# 1.31) - no external controller.
+#
+# failurePolicy: Fail = if the policy can't be evaluated, DENY. Fail closed: an
+# unevaluable guard must never let an un-isolated pod through.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: require-kata-runtimeclass
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    # runtimeClassName is optional; normalize unset (nil) AND "" to the same empty
+    # string so both the missing-field and blank-value regressions are caught.
+    - name: rtc
+      expression: "has(object.spec.runtimeClassName) ? object.spec.runtimeClassName : ''"
+  validations:
+    - expression: >-
+        variables.rtc in [
+        {{- range $i, $c := .Values.allowedRuntimeClasses }}{{ if $i }}, {{ end }}'{{ $c }}'{{- end }}]
+      reason: Forbidden
+      messageExpression: >-
+        "runner pods must run under a Kata microVM RuntimeClass (" +
+        {{ .Values.allowedRuntimeClasses | join "/" | quote }} +
+        "); refusing runtimeClassName='" + variables.rtc +
+        "' which would fall back to runc with no VM isolation"
+---
+# The policy above is cluster-scoped and matches all pods; this binding is what
+# actually ENFORCES it, and only in the runner namespace - so platform pods that
+# legitimately run on runc (Cilium, Tetragon in kube-system) are untouched. Every
+# namespace carries the immutable kubernetes.io/metadata.name label, so selecting
+# on it targets exactly labs-runners.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: require-kata-runtimeclass
+spec:
+  policyName: require-kata-runtimeclass
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.runnerNamespace }}
+{{- end }}

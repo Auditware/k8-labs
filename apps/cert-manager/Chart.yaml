@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cert-manager
+description: The ClusterIssuer chain cert-manager uses to issue certs - self-signed root CA locally, real ACME (Let's Encrypt) once the public domain exists. cert-manager itself is a cluster prerequisite installed the same way as Cilium (see docs/architecture/environments.md), not managed by this chart - CRD lifecycle via a Helm subchart dependency is finicky enough locally that it's not worth it for a controller that has to exist before this chart's own resources can be admitted anyway.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,32 @@
+image:
+  repository: ghcr.io/auditware/frontend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# GHCR images are private by default - pull secret named here, created
+# out-of-band (see docs/self-hosting.md). Empty for public/local.
+imagePullSecrets: []
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+ingress:
+  enabled: true
+  host: k8labs.example.com   # prod host - same as apps/backend's; Tilt n/a (frontend runs bun dev locally)
+  path: /
+  pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# Traefik security-headers middleware (prod hardening). Disabled by default so
+# local/k3d is unaffected; enabled in prod via the ArgoCD Application.
+traefikMiddleware:
+  enabled: false

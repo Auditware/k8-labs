@@ -1,0 +1,319 @@
+# node-token-harvest - stealing service-account tokens off the node.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student's foothold -
+# the `workstation` pod - has node filesystem access (a hostPath mount) but its
+# own service account can read nothing. A privileged workload, `metrics-agent`,
+# runs as a service account that CAN read the flag Secret; the kubelet mounts
+# that account's token as a file on the node. The student harvests it and uses it
+# against the API.
+#
+# The lesson - the payoff of every escape lab - is that node access is cluster
+# access. The kubelet writes every pod's service-account token to disk under
+# /var/lib/kubelet/pods/.../token, so anyone who can read the node's filesystem
+# can collect every identity scheduled there and become the most powerful one.
+# What an EDR should observe: a pod reading token files that belong to OTHER pods,
+# then authenticating to the API as one of them.
+#
+# Containment: node access here is the disposable nested cluster's node - the
+# Kata microVM guest in prod, the runner pod's own container under runc locally -
+# so the harvested identities exist only inside the throwaway session. No new
+# image; the flag Secret is bait (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+---
+# The objective. Only the collector service account (below) can read it; the
+# foothold's own account cannot.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flag
+  namespace: ops
+type: Opaque
+stringData:
+  flag: "k8labs{node_access_is_every_pods_token_is_cluster_access}"
+  note: "You read this with a token harvested off the node, not your own."
+---
+# The foothold's identity: powerless. It exists so kubectl has working in-cluster
+# plumbing (API address + CA), but it can read nothing - the point is the token
+# you STEAL, not the one you were given.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+# The powerful identity whose token you will harvest. A metrics collector that
+# legitimately reads secrets - bound cluster-wide so it can read the flag.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: collector
+  namespace: ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: secret-collector
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: collector-reads-secrets
+subjects:
+  - kind: ServiceAccount
+    name: collector
+    namespace: ops
+roleRef:
+  kind: ClusterRole
+  name: secret-collector
+  apiGroup: rbac.authorization.k8s.io
+---
+# The privileged workload whose token lands on the node. It runs as collector
+# with its token mounted (so the kubelet writes it to disk under the node's
+# /var/lib/kubelet), and just sleeps. Uses the baked foothold image.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-agent
+  namespace: ops
+  labels:
+    app: metrics-agent
+spec:
+  serviceAccountName: collector
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: agent
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# The foothold: where the student's terminal attaches. Its own (station) token is
+# mounted only to give kubectl the API address + CA; it reads nothing. The
+# PLANTED FLAW is the hostPath mount of the kubelet directory at
+# /host/var/lib/kubelet, which exposes the kubelet's on-disk token files for every
+# pod - including metrics-agent's. The mount is deliberately scoped to the kubelet
+# dir (not the node root) - same containment shape as static-pod-persist's main
+# container - so the intended path is harvesting a kubelet token, not reading the
+# node's admin kubeconfig (/etc/rancher/k3s/k3s.yaml) or the k3s datastore, either
+# of which would be an unintended one-command jump to cluster-admin.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  hostname: node-token-harvest
+  serviceAccountName: station
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  volumes:
+    # ONLY the kubelet directory, where the kubelet writes every pod's token. This
+    # is the whole surface the lesson needs; mounting the node root instead would
+    # also expose /etc/rancher/k3s/k3s.yaml and /var/lib/rancher/k3s (admin creds +
+    # datastore), letting the student become cluster-admin without harvesting a
+    # token at all - and slip past the Tetragon detector that watches the token read.
+    - name: kubelet-dir
+      hostPath:
+        path: /var/lib/kubelet
+        type: Directory
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: kubelet-dir
+          mountPath: /host/var/lib/kubelet
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# ── Defender: the in-guest eBPF sensor (Tetragon) ──────────────────────────
+# Same wiring as modules/ebpf-detect.yaml (the reference eBPF module - see it for
+# the full rationale on each field): a Tetragon DaemonSet + an export-stdout
+# sidecar in the `tetragon` namespace, whose JSON event stream the Defender pane
+# tails (Module.EBPF + DefenderSpec{app=tetragon, container export-stdout} in
+# registry.go). Only the TracingPolicy differs per lab. Here it catches the
+# harvest: a process opening a kubelet on-disk service-account `token` file
+# through the node mount - the tell that a pod is reading OTHER pods' identities
+# off the node's disk.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tetragon
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tetragon
+  namespace: tetragon
+---
+# The detection policy. Hook the openat(2) syscall and match the FILENAME the
+# caller passed - the literal string, before path resolution - so we see exactly
+# what the student typed: a read of a kubelet pod token via the /host node mount
+# (`cat /host/var/lib/kubelet/pods/<uid>/.../token`). A syscall hook (not the
+# path-resolving LSM `security_file_permission`, which would report the token's
+# real dentry path and miss the `/host` bind-mount framing) is what surfaces the
+# node-mount access itself. Prefix pins it to the kubelet pod dir; Postfix pins
+# it to the `token` file, so directory walks by `find` don't flood the feed -
+# only the actual token read posts. Loaded as a cluster TracingPolicy from
+# --tracing-policy-dir (no operator/CRD needed in a single-tenant nested cluster).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-policies
+  namespace: tetragon
+data:
+  node-token-read.yaml: |
+    apiVersion: cilium.io/v1alpha1
+    kind: TracingPolicy
+    metadata:
+      name: node-token-read
+    spec:
+      kprobes:
+        - call: "sys_openat"
+          syscall: true
+          args:
+            - index: 0
+              type: "int"
+            - index: 1
+              type: "string"
+          selectors:
+            - matchArgs:
+                - index: 1
+                  operator: "Prefix"
+                  values:
+                    - "/host/var/lib/kubelet/pods"
+                - index: 1
+                  operator: "Postfix"
+                  values:
+                    - "/token"
+              matchActions:
+                - action: Post
+                  rateLimit: "2s"
+---
+# Tetragon as a bare DaemonSet (no Helm, no operator, no CRDs) - identical to
+# modules/ebpf-detect.yaml's, which carries the field-by-field rationale. Two
+# containers: `tetragon` loads the eBPF (CO-RE via the guest kernel's BTF) and
+# serves events on a unix gRPC socket; `export-stdout` streams them to stdout as
+# JSON for the Defender pane to tail. --enable-k8s-api=false: the sensor observes
+# by kernel, not pod metadata, so it needs no nested-API access.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tetragon
+  namespace: tetragon
+  labels:
+    app: tetragon
+spec:
+  selector:
+    matchLabels:
+      app: tetragon
+  template:
+    metadata:
+      labels:
+        app: tetragon
+    spec:
+      serviceAccountName: tetragon
+      # eBPF observes every process on the nested node's kernel; hostPID lets
+      # Tetragon resolve their /proc metadata.
+      hostPID: true
+      containers:
+        - name: tetragon
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          securityContext:
+            privileged: true
+          # Mount a FRESH private bpffs + tracefs/debugfs in the sensor's own
+          # mount namespace before starting the agent (privileged), so pinned
+          # maps never touch the shared host /sys/fs/bpf and the kprobe has its
+          # attach point. See ebpf-detect.yaml for why this beats hostPath here.
+          command:
+            - sh
+            - -c
+            - |
+              mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+              mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+              mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+              exec /usr/bin/tetragon \
+                --enable-k8s-api=false \
+                --tracing-policy-dir=/etc/tetragon/tetragon.tp.d \
+                --export-filename=/var/run/cilium/tetragon/tetragon.log \
+                --server-address=unix:///var/run/tetragon/tetragon.sock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+            - name: export-log
+              mountPath: /var/run/cilium/tetragon
+            # subPath projects ONLY the policy file into the dir - a plain
+            # ConfigMap mount adds k8s's `..data` symlink + timestamped dir, which
+            # --tracing-policy-dir walks too, loading the policy twice and killing
+            # the agent ("collection with the key already exists"). See ebpf-detect.
+            - name: tracing-policy
+              mountPath: /etc/tetragon/tetragon.tp.d/node-token-read.yaml
+              subPath: node-token-read.yaml
+              readOnly: true
+        - name: export-stdout
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          # Stream events from the agent's gRPC socket to stdout as JSON. The
+          # Defender pane tails THIS container's log.
+          command:
+            - tetra
+            - getevents
+            - -o
+            - json
+            - --server-address
+            - unix:///var/run/tetragon/tetragon.sock
+          volumeMounts:
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+      volumes:
+        # emptyDir, NOT hostPath: the agent mounts its own bpffs here so its
+        # pinned maps never touch the shared host /sys/fs/bpf (local coexistence).
+        - name: bpf-maps
+          emptyDir: {}
+        - name: tetragon-run
+          emptyDir: {}
+        - name: export-log
+          emptyDir: {}
+        - name: tracing-policy
+          configMap:
+            name: tetragon-policies

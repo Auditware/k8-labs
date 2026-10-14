@@ -1,0 +1,88 @@
+# hostpath-escape - reading the node's filesystem through a hostPath mount.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student's foothold -
+# the `workstation` pod - was carelessly given a hostPath mount of the node's
+# root filesystem. There is no flag in the cluster's API to read; the flag is a
+# file on the NODE, reachable only by stepping outside the container's own view.
+#
+# The lesson: a hostPath volume of `/` dissolves the container boundary. The pod
+# can read (and often write) the node's entire filesystem - other pods' secrets
+# under /var/lib/kubelet, the kubelet's own kubeconfig, anything. RBAC never
+# enters into it, because this is filesystem access, not an API call. What an EDR
+# should observe: a pod mounting a sensitive host path, then reading files that
+# belong to the node, not the container.
+#
+# Containment: "the node" here is the disposable nested cluster's node - the
+# session-runner's microVM guest in prod (Kata), the runner pod's own container
+# locally (runc). Escaping it compromises only the throwaway session, the same
+# two walls ns-escape relies on. No new image; the flag file is bait, planted on
+# the node by an initContainer (see services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+# Explicit SA so the workstation pod doesn't race the namespace's auto-created
+# default SA (same fix as suid-privesc). The token is not the point here - the
+# hostPath mount is - but admission still needs the SA to exist.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+# The foothold: the student's terminal attaches here. It runs as root in the
+# container (the foothold image's default) and mounts the node's root filesystem
+# at /host - read-only for the shell, but that is enough to read the flag.
+#
+# PLANTED FLAW: the hostPath volume of `/`. No workload should mount the node
+# root; this one does, and that single volume is the whole vulnerability.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  hostname: hostpath-escape
+  serviceAccountName: station
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  volumes:
+    - name: host-root
+      hostPath:
+        path: /
+        type: Directory
+  initContainers:
+    # Plants the flag on the NODE (not in the container image), writing it
+    # through the same host mount the student will later read. Root-owned and
+    # mode 600, so only node-root access - i.e. the escape - reveals it.
+    - name: plant-flag
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command:
+        - sh
+        - -c
+        - 'mkdir -p /host/opt/k8labs && printf "%s\n" "k8labs{hostpath_root_mount_reads_the_whole_node}" > /host/opt/k8labs/flag.txt && chmod 600 /host/opt/k8labs/flag.txt'
+      volumeMounts:
+        - name: host-root
+          mountPath: /host
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: host-root
+          mountPath: /host
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

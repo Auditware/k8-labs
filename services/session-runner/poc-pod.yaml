@@ -1,0 +1,89 @@
+# A2 proof harness - NOT a production spec, NOT ArgoCD-managed. The real pod is
+# built in Go by the backend (B1). This is the throwaway manifest you kubectl
+# apply onto k3d to answer the one go/no-go question: can a pod host a working
+# nested k3s? See docs/architecture/nested-lab-rewrite.md, phase A2.
+#
+#   kubectl apply -f services/session-runner/poc-pod.yaml
+#   kubectl -n session-runner-poc wait --for=condition=Ready pod/session-runner-poc --timeout=180s
+#   kubectl -n session-runner-poc exec session-runner-poc -- k3s kubectl get nodes
+#   kubectl -n session-runner-poc exec session-runner-poc -- cat /output/kubeconfig  # outside-dial check
+#
+# runtimeClassName is intentionally omitted here = plain runc, matching local.
+# A3 re-runs this same shape with runtimeClassName: kata-fc on the AX41.
+#
+# NOT the `labs` namespace: that enforces PodSecurity `restricted`, which
+# rejects privileged pods. The runner pod is privileged by necessity, so it
+# needs a namespace that permits it. This is not a POC hack - in the real model
+# the lab-content pods run inside the NESTED cluster (governed by the nested
+# cluster's own PSA), so outer `restricted` no longer applies to them; only the
+# runner pod faces outer PSA, and it must be allowed to be privileged.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: session-runner-poc
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: session-runner-poc
+  namespace: session-runner-poc
+  labels:
+    app.kubernetes.io/name: session-runner
+    k8labs.io/poc: "a2"
+spec:
+  # Pin to the labs node the same way real lab pods are (harmless on single-node
+  # k3d; matches prod). Comment out if your local node isn't labeled.
+  nodeSelector:
+    k8labs.io/role: labs
+  tolerations:
+    - key: k8labs.io/dedicated
+      operator: Equal
+      value: labs
+      effect: NoSchedule
+  restartPolicy: Never
+  containers:
+    - name: runner
+      # In-cluster registry name (k3d host_from_cluster), not localhost:5000 -
+      # that alias only resolves host-side where docker push runs.
+      image: k8labs-registry:5000/session-runner:dev
+      # :dev is a moving tag during A2 iteration; force a pull so the node never
+      # serves a stale cached layer.
+      imagePullPolicy: Always
+      # Nested k3s needs to mount cgroups, run its own containerd, manage
+      # netfilter - none of which a restricted pod can do. Under runc this
+      # means privileged; in prod the microVM makes that privilege harmless
+      # because it's confined to a throwaway guest kernel.
+      securityContext:
+        privileged: true
+      env:
+        - name: SESSION_API_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        # Uncomment if overlay-on-overlay snapshotter fails on your kernel:
+        # - name: K3S_EXTRA_ARGS
+        #   value: "--snapshotter=native"
+      ports:
+        - containerPort: 6443
+          name: kube-api
+      volumeMounts:
+        - name: rancher
+          mountPath: /var/lib/rancher/k3s
+        - name: kubelet
+          mountPath: /var/lib/kubelet
+          mountPropagation: Bidirectional
+        - name: run
+          mountPath: /run
+        - name: output
+          mountPath: /output
+  volumes:
+    - name: rancher
+      emptyDir: {}
+    - name: kubelet
+      emptyDir: {}
+    - name: run
+      emptyDir: {}
+    - name: output
+      emptyDir: {}

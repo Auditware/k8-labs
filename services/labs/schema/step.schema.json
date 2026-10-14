@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8labs.example.com/schema/lab-course-step.schema.json",
+  "title": "Lab course step",
+  "description": "One screen of a lab's guided course. Files live at services/labs/<slug>/course/NN-name.md as Markdown with YAML frontmatter; this schema describes the PARSED object, not the file bytes. It is the single authority CI validates against, and the TypeScript and Go types are generated from it - never hand-written.",
+
+  "type": "object",
+  "required": ["ey", "eyt", "kind"],
+  "unevaluatedProperties": false,
+
+  "properties": {
+    "kind": {
+      "description": "Which screen shape this is. concept and quiz are the training-guide template's two; flag is the deliberate capstone screen - it takes the CTF flag captured in the live lab and marks the lab solved. The expected flag is never in content; it lives server-side in labs.Module.Flag.",
+      "enum": ["concept", "quiz", "flag"]
+    },
+    "ey": {
+      "description": "Eyebrow label, top-left, rendered uppercase. Signals the act: CONCEPT 1, FEATURE, UNDER THE HOOD, DEEP DIVE, GUT-CHECK, RECAP.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 24
+    },
+    "eyt": {
+      "description": "Eyebrow topic, next to ey.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48
+    },
+    "tag": {
+      "description": "Muted subtitle, top-right. Mutually exclusive with chip; chip wins if both are set, so setting both is rejected rather than silently resolved.",
+      "type": "string",
+      "maxLength": 32
+    },
+    "chip": {
+      "description": "A labelled pill, top-right, for a screen that carries weight - a severity, a key takeaway, a caveat.",
+      "type": "object",
+      "required": ["label", "tone"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "tone": {
+          "description": "accent = a key idea; warn = caution; danger = a pitfall. Semantic only - do not pick by colour.",
+          "enum": ["accent", "warn", "danger"]
+        }
+      }
+    },
+    "diagram": {
+      "$ref": "#/$defs/diagram"
+    }
+  },
+
+  "allOf": [
+    {
+      "description": "tag and chip both occupy the top-right slot. Refusing both is better than picking a winner silently.",
+      "not": { "required": ["tag", "chip"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "concept" } }, "required": ["kind"] },
+      "then": {
+        "required": ["title", "body", "aha"],
+        "properties": {
+          "title": {
+            "description": "The screen's claim, stated plainly. A title that is a topic ('Namespaces') rather than a claim ('A namespace is not a security boundary') wastes the screen.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "body": {
+            "description": "The prose, as restricted Markdown. Backticks mark a term's first use and render as a mono chip; the cold-term lint checks every such term was introduced on an earlier screen. No raw HTML or SVG.",
+            "type": "string",
+            "minLength": 1
+          },
+          "aha": {
+            "description": "The reveal. This must carry the ANALOGY or the 'so what', never more mechanics - a reveal that restates the body is the single most common way these screens go flat.",
+            "type": "string",
+            "minLength": 1
+          },
+          "revealLabel": {
+            "description": "Button text for the reveal. Defaults to 'reveal the intuition'; use 'the fix', 'the takeaway', 'why it matters' when they fit better.",
+            "type": "string",
+            "maxLength": 32
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "quiz" } }, "required": ["kind"] },
+      "then": {
+        "required": ["q", "opts", "explain"],
+        "properties": {
+          "q": {
+            "description": "The question. The intuitive answer should be wrong - a quiz that confirms what the reader already assumed teaches nothing.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "opts": {
+            "description": "2-4 options, exactly one correct. More than four does not fit the pane and stops being a test of understanding.",
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "required": ["t"],
+              "additionalProperties": false,
+              "properties": {
+                "t": { "type": "string", "minLength": 1, "maxLength": 160 },
+                "correct": { "type": "boolean" }
+              }
+            }
+          },
+          "explain": {
+            "description": "Why the intuitive answer fails and the right one holds. This is the actual teaching moment, not a footnote to it.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "flag" } }, "required": ["kind"] },
+      "then": {
+        "required": ["title", "body"],
+        "properties": {
+          "title": {
+            "description": "The capstone prompt, stated as a claim the flag proves ('You read a secret you were never meant to reach').",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "body": {
+            "description": "Restricted Markdown telling the student to paste the k8labs{...} value they captured. The expected flag is NEVER written here - it is server-side in labs.Module.Flag.",
+            "type": "string",
+            "minLength": 1
+          },
+          "aha": {
+            "description": "Optional one-line reveal - why capturing this flag is the proof the technique worked.",
+            "type": "string",
+            "minLength": 1
+          },
+          "revealLabel": {
+            "description": "Button text for the optional reveal.",
+            "type": "string",
+            "maxLength": 32
+          }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "diagram": {
+      "description": "A declarative drawing, compiled to SVG by the same box/wire/lbl/seal primitives the training-guide template uses. Declarative rather than a JS function on purpose: it is what lets CI check for overlapping labels, which authoring.md otherwise says can only be caught by eyeballing the page.",
+      "type": "object",
+      "required": ["shapes"],
+      "additionalProperties": false,
+      "properties": {
+        "caption": {
+          "description": "One line under the drawing, rendered in the reserved y 240-270 band so it can never collide with the shapes above it.",
+          "type": "string",
+          "maxLength": 64
+        },
+        "shapes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "items": { "$ref": "#/$defs/shape" }
+        }
+      }
+    },
+
+    "shape": {
+      "oneOf": [
+        { "$ref": "#/$defs/box" },
+        { "$ref": "#/$defs/frame" },
+        { "$ref": "#/$defs/wire" },
+        { "$ref": "#/$defs/label" },
+        { "$ref": "#/$defs/seal" }
+      ]
+    },
+
+    "tone": {
+      "description": "Semantic role, never a colour. accent = the good/verified path and the subject of the screen; warn = caution; danger = where it breaks or the attack; neutral = ordinary plumbing. More than about three tones on one drawing reads as noise.",
+      "enum": ["neutral", "accent", "warn", "danger"],
+      "default": "neutral"
+    },
+
+    "x": { "type": "number", "minimum": 0, "maximum": 640 },
+    "y": { "type": "number", "minimum": 0, "maximum": 300 },
+
+    "box": {
+      "description": "A rounded actor box. Boxes are things.",
+      "type": "object",
+      "required": ["type", "x", "y", "w", "h", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "box" },
+        "x": { "$ref": "#/$defs/x" },
+        "y": { "$ref": "#/$defs/y" },
+        "w": { "type": "number", "minimum": 40, "maximum": 600 },
+        "h": { "type": "number", "minimum": 30, "maximum": 240 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 28 },
+        "sub": { "type": "string", "maxLength": 32 },
+        "tone": { "$ref": "#/$defs/tone" },
+        "delay": { "$ref": "#/$defs/delay" }
+      }
+    },
+
+    "frame": {
+      "description": "A container outline that other shapes sit inside - 'one cluster holding these namespaces'. Exempt from the box-overlap lint by design, since containing things is its whole job; still bounds-checked, and its caption is drawn on the border so it cannot collide with the contents.",
+      "type": "object",
+      "required": ["type", "x", "y", "w", "h"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "frame" },
+        "x": { "$ref": "#/$defs/x" },
+        "y": { "$ref": "#/$defs/y" },
+        "w": { "type": "number", "minimum": 60, "maximum": 600 },
+        "h": { "type": "number", "minimum": 40, "maximum": 240 },
+        "label": { "type": "string", "maxLength": 28 },
+        "tone": { "$ref": "#/$defs/tone" },
+        "delay": { "$ref": "#/$defs/delay" }
+      }
+    },
+
+    "wire": {
+      "description": "A connector. Wires are flow. Use dashed + danger for an attack arrow.",
+      "type": "object",
+      "required": ["type", "from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "wire" },
+        "from": { "$ref": "#/$defs/point" },
+        "to": { "$ref": "#/$defs/point" },
+        "tone": { "$ref": "#/$defs/tone" },
+        "dashed": { "type": "boolean" },
+        "arrow": { "type": "boolean", "default": true },
+        "delay": { "$ref": "#/$defs/delay" }
+      }
+    },
+
+    "label": {
+      "description": "Free text. Not measured by the layout, so keep it short - the overlap lint estimates its box from the character count and will reject a long one that lands on a shape.",
+      "type": "object",
+      "required": ["type", "x", "y", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "label" },
+        "x": { "$ref": "#/$defs/x" },
+        "y": { "$ref": "#/$defs/y" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "anchor": { "enum": ["start", "middle", "end"], "default": "middle" },
+        "tone": { "$ref": "#/$defs/tone" },
+        "delay": { "$ref": "#/$defs/delay" }
+      }
+    },
+
+    "seal": {
+      "description": "A wax-seal glyph: intact (a check) or broken (a crack). The house way to say 'this held' or 'this shattered'.",
+      "type": "object",
+      "required": ["type", "cx", "cy"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "seal" },
+        "cx": { "$ref": "#/$defs/x" },
+        "cy": { "$ref": "#/$defs/y" },
+        "r": { "type": "number", "minimum": 10, "maximum": 60, "default": 26 },
+        "broken": { "type": "boolean", "default": false },
+        "delay": { "$ref": "#/$defs/delay" }
+      }
+    },
+
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "$ref": "#/$defs/x" },
+        "y": { "$ref": "#/$defs/y" }
+      }
+    },
+
+    "delay": {
+      "description": "Animation start, in seconds. Stagger left-to-right ~0.15-0.3s apart so the drawing assembles as the idea builds.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 4
+    }
+  }
+}

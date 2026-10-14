@@ -1,0 +1,56 @@
+# Hooks the kernel's commit_creds() - called whenever a process's credentials
+# (uid/gid/euid/egid/...) are installed, including the automatic euid elevation
+# execve() does for a SUID-root binary. This is deliberately not the more
+# commonly-documented "detect setuid()/setgid() syscalls" policy (Tetragon's own
+# privileges-raise.yaml example) - that only catches an explicit setuid() call,
+# while the interesting privilege jumps happen inside the kernel's own exec-time
+# handling of the SUID bit, which only commit_creds observes.
+#
+# WHAT THIS WATCHES, AND WHY IT MOVED. It used to be scoped to the legacy lab
+# namespaces, where it observed the student's own exploit inside a lab pod. Those
+# namespaces are gone (see docs/architecture/lab-session-rewrite.md, F1) and it
+# is now scoped to the session-runner namespace, where it means something
+# different and more important: a credential change visible to the HOST kernel
+# from the runner namespace.
+#
+# Read the signal accordingly - and note it does NOT give a defender a view of
+# what a student does inside their nested cluster, in EITHER runtime:
+#   - local (k3d, runc): the nested cluster shares the host kernel, so the probe
+#     CAN fire for nested processes - but they are attributed to namespace ""
+#     (the host cannot map the nested containerd's cgroups back to a pod), so
+#     this namespace-scoped policy does not match them. And even a cluster-wide
+#     policy's namespace="" events are dropped before export by the upstream
+#     Tetragon chart's default export-denylist {"namespace":["","cilium",
+#     "kube-system"]}. Net: nested lab activity never reaches Loki/Grafana here.
+#     (Verified empirically 2026-07 - the escalation fires in metrics as
+#     namespace="" and is filtered out at export.)
+#   - prod (Kata/Firecracker): the nested cluster runs behind a microVM kernel
+#     boundary, so host eBPF CANNOT see inside it at all. That is the containment
+#     working as designed. What remains visible is the runner pod's host-side
+#     surface - which makes an unexpected commit_creds event here a possible
+#     BREAKOUT indicator, not routine lab activity.
+#
+# Consequence worth stating plainly: this policy is a BREAKOUT/boundary sensor on
+# the runner namespace, NOT a window into lab activity - there is no in-lab EDR
+# coverage of what a student does inside their nested cluster in either runtime.
+# Observing lab behaviour needs a sensor INSIDE the nested cluster/microVM; under
+# Kata that additionally requires a guest kernel built with BTF + kprobes (the
+# stock kata-fc guest kernel is stripped of both; the shipped -debug variant has
+# them - PoC'd 2026-07). That sensor does not exist today; see the eBPF-per-
+# session plan for the path to it.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: process-creds-changed
+  namespace: {{ .Values.runnerNamespace }}
+spec:
+  kprobes:
+    - call: "commit_creds"
+      syscall: false
+      args:
+        - index: 0
+          type: "cred"
+      selectors:
+        - matchActions:
+            - action: Post
+              rateLimit: "1m"

@@ -1,0 +1,28 @@
+# "Everything else" catch-all - apps/backend's Ingress owns /api/*. Two
+# separate Ingress objects on the same host, merged by the controller; see
+# docs/architecture/environments.md for why the frontend can get away with
+# a relative /api path in every environment because of this exact split.
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "frontend.fullname" . }}
+  labels:
+    {{- include "frontend.labels" . | nindent 4 }}
+  {{- if .Values.traefikMiddleware.enabled }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "frontend.fullname" . }}-security-headers@kubernetescrd
+  {{- end }}
+spec:
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "frontend.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

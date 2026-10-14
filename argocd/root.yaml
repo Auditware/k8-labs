@@ -1,0 +1,35 @@
+# App-of-Apps root. Applied once by infra/cluster/bootstrap.sh (prod only -
+# locally the individual Applications are applied by hand and left manual-sync
+# so they don't fight Tilt). This root recurses argocd/applications/ and keeps
+# the set of child Applications converged with git: add an Application file,
+# push, and it appears in prod with no extra kubectl.
+#
+# project: default - the root only ever creates Application objects in the
+# argocd namespace, which the tight k8labs AppProject deliberately doesn't
+# allow (its destinations are the app namespaces only). The children each
+# reference the scoped k8labs project, so the actual workload blast radius
+# stays least-privilege; only this thin root uses the built-in project.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: argocd/applications
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  # The root itself auto-syncs so new/removed child Applications propagate.
+  # Each child keeps its own syncPolicy (manual today - see the note in
+  # backend.yaml; prod flips them to automated per docs/self-hosting.md, or via an
+  # ApplicationSet later for true push-to-deploy without touching local).
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

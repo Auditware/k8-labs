@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary meta. These are the site-wide defaults; per-route pages
+         override title/description/canonical/og at runtime via src/lib/seo.ts
+         (useSeo), and serve.ts rewrites them per known public route so non-JS
+         crawlers and social unfurlers get the right tags too. -->
+    <!-- The title/description/canonical/og:*/twitter:* tags below are kept on
+         single lines on purpose: serve.ts rewrites them per known public route
+         by attribute (see PUBLIC_META). Keep them single-line if you edit. -->
+    <title>K8 Labs - Hands-on Kubernetes Attack &amp; Defense</title>
+    <meta name="description" content="Hands-on Kubernetes attack &amp; defense labs. Drop into a real, disposable cluster from a root shell, break the target, and earn a verifiable rank when you clear each mission." />
+    <link rel="canonical" href="https://k8labs.example.com/" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#0a0a12" />
+
+    <!-- Icons -->
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="K8 Labs" />
+    <meta property="og:title" content="K8 Labs - Hands-on Kubernetes Attack &amp; Defense" />
+    <meta property="og:description" content="Drop into a real, disposable cluster from a root shell, break the target, and earn a verifiable rank when you clear each mission." />
+    <meta property="og:url" content="https://k8labs.example.com/" />
+    <meta property="og:image" content="https://k8labs.example.com/media/ebpf-lab-demo.poster.jpg" />
+    <meta property="og:image:width" content="2776" />
+    <meta property="og:image:height" content="1600" />
+    <meta property="og:image:alt" content="A K8 Labs eBPF detection lab session in the browser terminal." />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="K8 Labs - Hands-on Kubernetes Attack &amp; Defense" />
+    <meta name="twitter:description" content="Drop into a real, disposable cluster from a root shell, break the target, and earn a verifiable rank when you clear each mission." />
+    <meta name="twitter:image" content="https://k8labs.example.com/media/ebpf-lab-demo.poster.jpg" />
+
+    <!-- Structured data: who runs the site + a searchable-site hint. Per-route
+         pages (profiles, leaderboard) add their own JSON-LD via useSeo. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://k8labs.example.com/#org",
+            "name": "K8 Labs",
+            "url": "https://k8labs.example.com/",
+            "logo": "https://k8labs.example.com/icon-512.png"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://k8labs.example.com/#website",
+            "url": "https://k8labs.example.com/",
+            "name": "K8 Labs",
+            "description": "Hands-on Kubernetes attack & defense labs with a verifiable rank.",
+            "publisher": { "@id": "https://k8labs.example.com/#org" }
+          }
+        ]
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

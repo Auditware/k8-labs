@@ -1,0 +1,30 @@
+# Our Tetragon detection policy (apps/tetragon) - a TracingPolicyNamespaced on
+# the session-runner namespace catching host-kernel-visible credential
+# transitions, which under Kata reads as a possible microVM breakout rather than
+# routine lab activity (see the chart's own comment). Distinct from the Tetragon
+# *controller*, which is upstream and installed by bootstrap.sh (it ships the
+# TracingPolicyNamespaced CRD this depends on). sync-wave 1: the CRD must exist
+# first.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tetragon-policy
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/tetragon
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: labs-runners
+  # Auto-sync (prod-only ArgoCD; see postgres.yaml for the full rationale).
+  # selfHeal reverts drift, prune off so nothing is auto-deleted. Deploys stay
+  # gated by the pin-bump commit.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

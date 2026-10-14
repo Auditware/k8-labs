@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/postgres
+    # Prod-only: use the out-of-band postgres-creds Secret (real password, never
+    # in git) instead of the chart's dev-default credentials. Local Tilt leaves
+    # existingSecret empty and uses the rendered dev password.
+    helm:
+      parameters:
+        - name: existingSecret
+          value: postgres-creds
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  # Auto-sync. These Application CRs live only in prod's ArgoCD - local dev uses
+  # Tilt, which manages its own workloads directly and never touches these - so
+  # there's nothing here for auto-sync to fight (the old "it'd fight Tilt" note
+  # conflated the two: Tilt drives the k3d cluster, not prod's ArgoCD). selfHeal
+  # reverts live drift; prune stays OFF so ArgoCD never deletes a resource that
+  # left git. Deploys are still gated by the deliberate image.tag pin-bump
+  # commit - auto-sync just applies it without the manual hard-refresh dance,
+  # and self-heals transient failures like a sync-ordering miss.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

@@ -1,0 +1,159 @@
+# recon-neighborhood - the third recon lab: mapping the cluster from a foothold
+# whose API access is denied, using DNS and what the pod already knows.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session.
+# The student's terminal attaches to the `foothold` pod in `dev`. kubectl is
+# stripped at start, and the `app` service account can list nothing over the API
+# - a `get`/`list` on services or pods returns 403.
+#
+# The planted flaw: two of them, working together. (1) The app's own config,
+# mounted at /etc/app/, names an internal upstream by its cluster DNS name -
+# configuration leaks topology. (2) That upstream, an internal `metrics` service
+# in the `observability` namespace, is unauthenticated: anything that can reach
+# it on the pod network gets its response. RBAC never enters the picture, because
+# DNS resolution and pod-network reachability are separate planes that do not
+# consult the authorizer. The student reads the config, resolves the name, curls
+# the service, and reads the flag from its body - defeating a `list` denial
+# without ever being allowed to list.
+#
+# What an EDR should observe: a foothold resolving and connecting to an internal
+# service across namespaces with no NetworkPolicy in its way - the signal that
+# `list` denial was mistaken for isolation.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+# PLANTED FLAW (1/2): the app's config, mounted into the foothold, names the
+# internal metrics endpoint by its cluster DNS name. This is the thread the
+# student pulls - configuration is a map of the neighborhood.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: dev
+data:
+  config.yaml: |
+    service: orders-api
+    env: production
+    log_level: info
+    upstreams:
+      # Internal metrics sink - reachable on the pod network, no auth.
+      metrics: http://metrics.observability.svc.cluster.local
+      database: orders-db.dev.svc.cluster.local:5432
+---
+# The foothold's identity - powerless over the API. A get/list on services
+# returns 403, which is the wall the student learns to go around, not through.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  namespace: dev
+---
+# The metrics server's identity. Named explicitly (rather than relying on the
+# namespace's `default` ServiceAccount) because a freshly created namespace has no
+# `default` SA yet when the backend applies this bundle - the SA controller
+# populates it asynchronously, so a pod that references `default` is rejected at
+# admission ("serviceaccount default not found"). Every lab pod names its own SA
+# for exactly this reason.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metrics
+  namespace: observability
+---
+# PLANTED FLAW (2/2): an unauthenticated internal service. The metrics server
+# serves the flag to anyone who reaches it. It runs the baked foothold image and
+# writes its one page at start, so the flag value lives in this manifest (which
+# the flag endpoint checks against) rather than a separate file.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-server
+  namespace: observability
+  labels:
+    app: metrics
+spec:
+  serviceAccountName: metrics
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: metrics
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      # A tiny HTTP responder built from the one server tool this image ships -
+      # busybox `nc` (no httpd applet). Each connection gets one fixed response
+      # whose body IS the flag, then the loop re-listens. Capturing the flag is
+      # just curling this service.
+      command:
+        - sh
+        - -c
+        - 'while true; do printf "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" "${#FLAG_BODY}" "$FLAG_BODY" | nc -l -p 8080; done'
+      env:
+        - name: FLAG_BODY
+          value: "k8labs{dns_named_the_service_rbac_tried_to_hide}"
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# The Service the config names. ClusterIP with a friendly DNS name; port 80 maps
+# to the server's 8080. No selector auth, no NetworkPolicy - reachable by anyone
+# on the pod network who can resolve it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics
+  namespace: observability
+spec:
+  selector:
+    app: metrics
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+# The foothold: where the student's terminal attaches.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold
+  namespace: dev
+  labels:
+    app: foothold
+spec:
+  hostname: neighborhood
+  serviceAccountName: app
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  volumes:
+    - name: app-config
+      configMap:
+        name: app-config
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sh", "-c", "rm -f /usr/local/bin/kubectl /usr/bin/kubectl 2>/dev/null; exec sleep infinity"]
+      volumeMounts:
+        - name: app-config
+          mountPath: /etc/app
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

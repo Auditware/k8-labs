@@ -1,0 +1,92 @@
+# static-pod-persist - running a pod the API server would never allow.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student's foothold -
+# the `workstation` pod - has a narrow, writable hostPath mount of the kubelet's
+# static-pod directory, and nothing else. It cannot read the node broadly. But
+# anything it writes into that directory, the kubelet runs directly - with no API
+# server, no RBAC, and no admission control in the way.
+#
+# The lesson: the kubelet watches a directory on disk (staticPodPath, on k3s
+# /var/lib/rancher/k3s/agent/pod-manifests) and runs any pod manifest placed
+# there as a "static pod". Those pods never pass through the API server, so
+# PodSecurity and RBAC never see them. An attacker who can write that directory
+# can run a fully privileged pod even when every API-level control forbids it -
+# both a privilege escalation and a persistence foothold. What an EDR should
+# observe: a workload writing to the kubelet's manifest directory, and a mirror
+# pod appearing that no API create request produced.
+#
+# Containment: the node whose manifest dir this writes is the disposable nested
+# cluster's node (Kata microVM guest in prod, runner pod's container under runc
+# locally), so the static pod runs only inside the throwaway session. No new
+# image; the flag is bait, planted on the node by an initContainer (see
+# services/labs/_template/README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+# The foothold. Its main container mounts ONLY the kubelet's static-pod directory
+# (writable) - so it can drop manifests but cannot read the node's flag directly.
+# The escalation is that a manifest it drops becomes a pod with whatever access
+# it asks for, admission be damned.
+#
+# PLANTED FLAW: a writable hostPath mount of the kubelet's static-pod directory.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  hostname: static-pod-persist
+  serviceAccountName: station
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  volumes:
+    # The narrow mount the student gets: just the manifest directory.
+    - name: manifests
+      hostPath:
+        path: /var/lib/rancher/k3s/agent/pod-manifests
+        type: DirectoryOrCreate
+    # A broad mount used ONLY by the initContainer, to plant the flag on the node.
+    # The main container never mounts this, so the foothold cannot read the flag
+    # without going through a static pod.
+    - name: host-root
+      hostPath:
+        path: /
+        type: Directory
+  initContainers:
+    - name: plant-flag
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command:
+        - sh
+        - -c
+        - 'mkdir -p /host/opt/k8labs && printf "%s\n" "k8labs{static_pods_run_with_no_apiserver_no_admission}" > /host/opt/k8labs/flag.txt && chmod 600 /host/opt/k8labs/flag.txt'
+      volumeMounts:
+        - name: host-root
+          mountPath: /host
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: manifests
+          mountPath: /manifests
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"

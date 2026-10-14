@@ -1,0 +1,17 @@
+# K8 Labs origin robots.txt. NOTE: Cloudflare's managed robots.txt feature may
+# append its own AI-crawler block below this content at the edge - that's
+# expected and additive. The one thing the edge does NOT add is the Sitemap
+# line, which is why it lives here.
+User-agent: *
+Allow: /$
+Allow: /leaderboards
+Allow: /u/
+Allow: /terms
+Allow: /privacy
+# Auth-gated / utility surfaces - no value in the index (also noindex'd in-app).
+Disallow: /login
+Disallow: /labs
+Disallow: /settings
+Disallow: /admin
+
+Sitemap: https://k8labs.example.com/sitemap.xml

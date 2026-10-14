@@ -1,0 +1,3064 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Backend API for the lab catalog, auth, and session lifecycle. See docs/architecture/tech-stack.md for why this is stdlib net/http, not a framework.",
+        "title": "K8 Labs API",
+        "contact": {},
+        "version": "0.1.0"
+    },
+    "basePath": "/api/v1",
+    "paths": {
+        "/admin/drivers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Filter by ?status=pending|approved|denied (default pending). Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List research drivers for vetting",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/drivers.Driver"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/drivers/{id}/decision": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Approve (optionally into the shared catalog) or deny an uploaded module. Admin only.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Vet a research driver",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Driver ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "bad request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/health": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Pod status across every namespace the platform's own components use (see internal/health.Namespaces). Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Cluster health",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/health.Namespace"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/labs/settings": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Effective settings for every module - modules with no override report isDefault=true with the built-in values, so the UI can render one row per lab without knowing which were customised.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List per-lab settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/accounts.LabSetting"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - admin only",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/labs/settings/{slug}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upserts the duration and idle timeout for one module. Rejected (400) rather than silently clamped when out of range, or when the idle timeout exceeds the duration - an idle timeout past the hard cap could never fire, so accepting it would show an admin a setting that does nothing.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Set a lab's session limits",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Limits in minutes",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.labSettingBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "updated",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid limits",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - admin only",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "unknown module",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Drops the module's override so it falls back to the built-in default (60m duration, 20m idle). Resetting a lab that was never customised is not an error.",
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Reset a lab to the default limits",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "reset",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - admin only",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/topology": {
+            "get": {
+                "description": "Live map of nodes, namespaces, pods and containers, joined with the static wiring (edges, host-substrate layers, dashboards) and active lab sessions. Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Cluster topology",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/topology.Topology"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "topology unavailable - not running in-cluster",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Every account with its lab entitlements, for the admin user-management page.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List users",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/accounts.AdminUser"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Permanently removes the account and its lab grants, and tears down its running sessions. Irreversible - block instead to suspend someone reversibly.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Delete a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "user ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "unknown user, or admins cannot delete themselves",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/blocked": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Blocking denies authentication entirely and tears down the user's running sessions. Grants are preserved, so unblocking restores prior access.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Block or unblock a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "user ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "unknown user, or admins cannot block themselves",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/grants": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Gives the user access to one module. Idempotent - re-granting is a no-op.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Grant a lab to a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "user ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "unknown module, or missing user",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/grants/{slug}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the user's access to one module and tears down any session they have running for it.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Revoke a lab from a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "user ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/quota": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Overrides the global LABS_DAILY_QUOTA_GIB_MINUTES for one user. gibMinutes null clears the override (back to the global default); 0 exempts the user; a positive value is their cap.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Set or clear a user's daily quota override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "user ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "unknown user, or a negative value",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not an admin",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/apikeys": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Metadata only. Key secrets are stored hashed and are unrecoverable after creation.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "List your API keys",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/accounts.APIKey"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the key once, in the \"key\" field - it is not stored in plaintext and cannot be retrieved again. The key authenticates as you: same labs, same role, and it stops working the moment your access is revoked or your account is blocked. expiresInDays omitted defaults to 30; 0 means never expires.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "Create an API key",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\\\"key\\\": \\\"k8labs_...\\\", \\\"apiKey\\\": accounts.APIKey}",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/apikeys/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Revokes one of your own keys. 404 if no such key belongs to you - the same answer whether it doesn't exist or belongs to someone else.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "Revoke an API key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "key ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "no such key",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/github/callback": {
+            "post": {
+                "description": "Same shape as the Google callback (see finishLogin) - exchanges a code, finds or creates the user, issues a session.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "GitHub OAuth callback",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\\\"user\\\": accounts.User, \\\"token\\\": string}",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid request body, redirect_uri not allowed, or GitHub account has no accessible email",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "code exchange or userinfo lookup failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/google/callback": {
+            "post": {
+                "description": "Exchanges an authorization code for the Google account, finds or creates the matching user, and issues a session (cookie + Bearer token, see finishLogin).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Google OAuth callback",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\\\"user\\\": accounts.User, \\\"token\\\": string}",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid request body or redirect_uri not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "code exchange or userinfo lookup failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/logout": {
+            "post": {
+                "description": "Clears the auth cookie server-side; clearing the Bearer token from localStorage is the frontend's job (see lib/api.ts's logout()).",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Log out",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/auth/me": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Current user",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/accounts.User"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/drivers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The shared vetted catalog plus your own uploads (any status). Research-grant gated.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "drivers"
+                ],
+                "summary": "List research drivers you may use",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/drivers.Driver"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - needs a research lab grant",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Raw .ko bytes as the request body (like avatar upload). Filename via ?filename=. Parsed and filed as pending for admin vetting. Research-grant gated.",
+                "consumes": [
+                    "application/octet-stream"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "drivers"
+                ],
+                "summary": "Upload a compiled kernel module (.ko)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/drivers.Driver"
+                        }
+                    },
+                    "400": {
+                        "description": "not a valid .ko",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "already uploaded",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "413": {
+                        "description": "module too large",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "429": {
+                        "description": "per-user upload quota or rate limit exceeded",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/leaderboard": {
+            "get": {
+                "description": "Public. Signed-out visitors and signed-in users who haven't cleared a lab see the top ranks only (the tail is gated, and the total is never disclosed). A signed-in user who has completed a lab sees the full board and their own rank.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "The operator leaderboard",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.leaderboardResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/modules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The lab modules the caller is entitled to. Admins get the full catalog; a regular user gets the free first lab plus everything progression has unlocked (each tier opens when the previous is solved) and any explicit grants. The X-Modules-Locked response header reports how many catalog labs are still locked for the caller (0 for admins).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "List lab modules",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/labs.Module"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/modules/{slug}/course": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The lesson shown in the lab's left pane. Entitlement-gated exactly like starting the lab: a user who was never granted this module gets 403, not the content. A module with no course authored yet returns an empty step list rather than 404 - a lab without a lesson is incomplete, not broken.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Get a lab's guided course",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/course.Course"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - module not granted",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/modules/{slug}/flag": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Checks the submitted flag against the module's expected flag (held server-side, never served) and, on a match, marks the lab complete - the moment and solve time are frozen once and never re-timed. A wrong flag is a normal 200 with correct=false, not an error.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Submit the CTF flag captured in a lab",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "The captured flag",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.flagBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.flagResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid body, or this lab has no flag",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - module not granted",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/modules/{slug}/progress": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Scoped to the caller - progress is keyed by (user, module), never by session, so it survives a session being reaped and the lab being restarted another day. `complete` reflects the captured flag, not the quizzes.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Get the caller's progress in a lab's course",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.progressResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upserts a single answer into the caller's progress. Quizzes are formative: this records the answer (right or wrong) but never marks the lab complete - only submitting the captured flag does that. Rejects a step slug that isn't a quiz in this course.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Record an answer to one quiz step",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "The step and chosen option",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.answerBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.progressResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "unknown step, or not a quiz step",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - module not granted",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes the caller's whole progress row for this module - quiz answers, completion and solve time. This is the \"restart the lab / retake the questions\" control: after it, every quiz is unanswered again and the lab is unsolved until the flag is resubmitted. Idempotent - clearing a lab with no progress is not an error.",
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Clear the caller's progress in a lab (restart)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "cleared",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/operators": {
+            "get": {
+                "description": "Public. The top few ranked operators with their real stats and activity calendar, for the landing \"track record\" deck.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Top operators for the landing showcase",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/accounts.PublicProfile"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/operators/{username}": {
+            "get": {
+                "description": "Public. One operator's handle, self-published bio/website, leaderboard standing, and daily activity calendar. Never an email or session detail.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "A public operator profile",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "operator handle",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/accounts.PublicProfile"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/profile": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The signed-in user's own editable profile (website, bio, whether an avatar is set).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get your profile",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/accounts.Profile"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets website and bio on your own account. Website must be an http(s) URL - it's rendered as a link, so other schemes are rejected.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Update your profile",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/accounts.Profile"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid website or bio too long",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/profile/avatar": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Raw image bytes as the request body (PNG/JPEG/GIF/WebP, max 1MB). The type is detected from the file's own magic bytes, not the Content-Type header. SVG is rejected - it can carry script and would be stored XSS served from this origin.",
+                "consumes": [
+                    "application/octet-stream"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Upload your avatar",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "unsupported image type",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "413": {
+                        "description": "image too large",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Remove your avatar",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/profile/username": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets the handle shown on the leaderboard and used in your public /operators/{username} URL. 3-32 chars of letters, digits, _ or -; must be unique (case-insensitive).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Change your display name",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\\\"username\\\": \\\"new_handle\\\"}",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid display name",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "display name already taken",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Provisions a per-session pod (target app + EDR sensor) for the chosen module. Ownership is recorded from the caller's token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Start a lab session",
+                "parameters": [
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/labs.Session"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - no grant for this module",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "session provisioning failed - Session.Status is \\\"error\\\", Session.Error has the reason",
+                        "schema": {
+                            "$ref": "#/definitions/labs.Session"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires auth *and* ownership (Session.OwnerID must match the caller) - the same gate as delete/terminal.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Get session status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/labs.Session"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not this session's owner",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires auth *and* ownership (Session.OwnerID must match the caller) - any other authenticated user gets 403, not just 401.",
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Stop a lab session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "403": {
+                        "description": "forbidden - not this session's owner",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions/{id}/extend": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Pushes a running research session's hard cap out by 2h (up to a 48h cap), sliding any live AI grant with it. Requires auth *and* ownership; only research labs are extendable. Returns the updated session.",
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Extend a research lab session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/labs.Session"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not the owner, or lab is not extendable",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "not running, or already at the 48h cap",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions/{id}/keepalive": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner-only presence ping (sent by the browser while the lab tab is visible) that resets the idle timeout. Does not touch the hard cap.",
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "Keep a running session's idle timer alive",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "idle clock reset (or session already gone)",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not the owner",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions/{id}/topology": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The student-facing map: their session's disposable nested cluster, plus one opaque node standing for everything outside it. Ownership-gated exactly like the terminal - any other authenticated user gets 403, not a filtered view.\nBuilt from the session's nested kubeconfig alone, never from the admin topology. That is structural rather than a filter: the outer cluster's node names, kernel versions, dashboards, signals and other users' sessions never enter the code path, so there is nothing to forget to strip. See internal/topology/scoped.go.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "labs"
+                ],
+                "summary": "Get the topology of your own lab cluster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/topology.ScopedTopology"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden - not this session's owner",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "accounts.APIKey": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "expiresAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "lastUsedAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prefix": {
+                    "type": "string"
+                },
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "accounts.AdminUser": {
+            "type": "object",
+            "properties": {
+                "blocked": {
+                    "description": "Blocked users can't authenticate - checked at login (see\nErrUserBlocked) and re-checked on every request by requireAuth, for the\nsame reason Role is re-read from the DB: blocking must take effect\nimmediately, not whenever an already-issued token happens to expire.",
+                    "type": "boolean"
+                },
+                "completed": {
+                    "description": "Completed is the module slugs this user has solved - captured and submitted\nthe flag for (lab_progress.completed_at IS NOT NULL, the same signal as\ngetProgress.complete). Non-nil like Grants, so it encodes as [] not null.\nLets the admin grant menu mark which labs a user has actually cleared,\ndistinct from which they can access. Independent of Grants: an admin (or a\ngrandfathered account) can have a completion without a current grant row.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "email": {
+                    "type": "string"
+                },
+                "entitled": {
+                    "description": "Entitled is what the user can actually ACCESS: explicit Grants folded in\nwith the free progression unlocks (tier-0 ns-escape for everyone, plus each\ntier the previous one unlocked). Distinct from Grants - a user with no grant\nrows still has the free first lab - so the admin page counts Entitled, not\nGrants, for \"lab access\"; otherwise everyone on the free tier reads as \"No\nlabs\". Non-nil like Grants, so it encodes as [] not null.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "grants": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "hasAvatar": {
+                    "description": "HasAvatar is `avatar IS NOT NULL` - it lets any client that has the\ncurrent user (the whole frontend, via /auth/me) decide whether to show\nthe uploaded image at /users/{id}/avatar or fall back to an initial,\nwithout a second round-trip to /profile. The image bytes are never put\non this struct; see accounts.GetProfile for the same NULL-check pattern.",
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "lastSolvedAt": {
+                    "description": "LastSolvedAt is when this user most recently captured a flag\n(MAX(lab_progress.completed_at)), nil for a user who has never solved one.\nIt is the primary sort key for the admin list - the operators an admin is\nmost likely acting on (recently active) surface first - and the frontend\ncan show it as a \"last solved\" hint.",
+                    "type": "string"
+                },
+                "live": {
+                    "description": "Live is the user's in-flight consumption from sessions running right now,\nnil when they have none. Populated by the handler from the labs.Manager,\nnot from the database - a running session has no lab_usage row yet. Kept\nseparate from Usage so the UI can show \"using N now\" distinctly from\nlifetime totals, and so neither has to be recomputed to render the other.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/labs.LiveUsage"
+                        }
+                    ]
+                },
+                "oauthProvider": {
+                    "type": "string"
+                },
+                "quotaOverrideGibMinutes": {
+                    "description": "QuotaOverrideGiBMinutes is this user's per-user daily quota override, nil\nwhen they fall back to the global default. Admin-editable. Semantics: nil =\nglobal default; 0 = unlimited (exempt); a positive value = this user's cap.",
+                    "type": "number"
+                },
+                "role": {
+                    "description": "Role is \"user\" or \"admin\" - see internal/api/auth.go's requireAdmin,\nwhich checks it fresh from the DB rather than trusting a JWT claim,\nso revoking admin access takes effect without waiting for a token\nto expire.",
+                    "type": "string"
+                },
+                "usage": {
+                    "description": "Usage is this account's HISTORICAL consumption from finished sessions, or\nnil for a user who has never completed one. Components stay separate all the\nway to the UI (see UserUsage) so the page can present them however it likes\nand any \"credits\" figure remains a formula over them, not a stored number.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/accounts.UserUsage"
+                        }
+                    ]
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.DayActivity": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "date": {
+                    "description": "YYYY-MM-DD (UTC)",
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.LabSetting": {
+            "type": "object",
+            "properties": {
+                "durationMinutes": {
+                    "type": "integer"
+                },
+                "idleMinutes": {
+                    "type": "integer"
+                },
+                "isDefault": {
+                    "type": "boolean"
+                },
+                "moduleSlug": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.Profile": {
+            "type": "object",
+            "properties": {
+                "bio": {
+                    "type": "string"
+                },
+                "hasAvatar": {
+                    "type": "boolean"
+                },
+                "linkedin": {
+                    "description": "https linkedin.com profile URL, or \"\"",
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                },
+                "x": {
+                    "description": "https x.com / twitter.com profile URL, or \"\"",
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.PublicProfile": {
+            "type": "object",
+            "properties": {
+                "activity": {
+                    "description": "Activity is the trailing ActivityDays of daily session counts (active days\nonly, oldest first). ActivityDays is the window length so the frontend can\nsize the grid without guessing.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/accounts.DayActivity"
+                    }
+                },
+                "activityDays": {
+                    "type": "integer"
+                },
+                "bio": {
+                    "type": "string"
+                },
+                "fastestSolveSeconds": {
+                    "type": "integer"
+                },
+                "hasAvatar": {
+                    "type": "boolean"
+                },
+                "joinedAt": {
+                    "type": "string"
+                },
+                "labsCompleted": {
+                    "type": "integer"
+                },
+                "linkedin": {
+                    "type": "string"
+                },
+                "longestStreakDays": {
+                    "type": "integer"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "totalOperators": {
+                    "type": "integer"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                },
+                "x": {
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.User": {
+            "type": "object",
+            "properties": {
+                "blocked": {
+                    "description": "Blocked users can't authenticate - checked at login (see\nErrUserBlocked) and re-checked on every request by requireAuth, for the\nsame reason Role is re-read from the DB: blocking must take effect\nimmediately, not whenever an already-issued token happens to expire.",
+                    "type": "boolean"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "hasAvatar": {
+                    "description": "HasAvatar is `avatar IS NOT NULL` - it lets any client that has the\ncurrent user (the whole frontend, via /auth/me) decide whether to show\nthe uploaded image at /users/{id}/avatar or fall back to an initial,\nwithout a second round-trip to /profile. The image bytes are never put\non this struct; see accounts.GetProfile for the same NULL-check pattern.",
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "oauthProvider": {
+                    "type": "string"
+                },
+                "role": {
+                    "description": "Role is \"user\" or \"admin\" - see internal/api/auth.go's requireAdmin,\nwhich checks it fresh from the DB rather than trusting a JWT claim,\nso revoking admin access takes effect without waiting for a token\nto expire.",
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "accounts.UserUsage": {
+            "type": "object",
+            "properties": {
+                "lastSessionAt": {
+                    "type": "string"
+                },
+                "totalCpuSeconds": {
+                    "type": "number"
+                },
+                "totalEgressBytes": {
+                    "type": "integer"
+                },
+                "totalGibMinutes": {
+                    "description": "Lifetime figures: who is heavy overall, independent of the window.",
+                    "type": "number"
+                },
+                "totalSessions": {
+                    "type": "integer"
+                },
+                "userId": {
+                    "type": "string"
+                },
+                "windowGibMinutes": {
+                    "description": "Trailing-window figures: what the quota actually acts on.",
+                    "type": "number"
+                },
+                "windowSessions": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.answerBody": {
+            "type": "object",
+            "properties": {
+                "option": {
+                    "type": "integer"
+                },
+                "stepSlug": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.flagBody": {
+            "type": "object",
+            "properties": {
+                "flag": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.flagResponse": {
+            "type": "object",
+            "properties": {
+                "complete": {
+                    "type": "boolean"
+                },
+                "correct": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.labSettingBody": {
+            "type": "object",
+            "properties": {
+                "durationMinutes": {
+                    "type": "integer"
+                },
+                "idleMinutes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.leaderboardEntryDTO": {
+            "type": "object",
+            "properties": {
+                "distinction": {
+                    "description": "Distinction is a category slug (\"fastest escape\" / \"longest streak\" /\n\"most labs cleared\") for the holder of that superlative; empty otherwise.\nThe frontend pairs it with the entry's own number for the flavor line.",
+                    "type": "string"
+                },
+                "fastestSolveSeconds": {
+                    "type": "integer"
+                },
+                "hasAvatar": {
+                    "type": "boolean"
+                },
+                "isViewer": {
+                    "type": "boolean"
+                },
+                "labsCompleted": {
+                    "type": "integer"
+                },
+                "labsTrend": {
+                    "description": "LabsTrend is the cumulative labs-cleared sparkline series (see\naccounts.LeaderboardEntry). null for an operator with no completions.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "linkedin": {
+                    "type": "string"
+                },
+                "longestStreakDays": {
+                    "type": "integer"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "userId": {
+                    "description": "UserID is an internal account id and is only sent to a signed-in caller\n(who can actually use it - avatars are auth-gated). A signed-out visitor's\nboard is keyed by rank alone, so no internal identifier rides a public\npayload. omitempty drops it entirely when unset.",
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "x": {
+                    "description": "Public profile links the operator added in Settings, shown as icons on the\nboard. Server-validated to https on the expected hosts; omitempty when unset.",
+                    "type": "string"
+                }
+            }
+        },
+        "api.leaderboardResponse": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.leaderboardEntryDTO"
+                    }
+                },
+                "locked": {
+                    "type": "boolean"
+                },
+                "nextTarget": {
+                    "description": "NextTarget is the operator the climb widget aims the viewer at - a genuine\nstep up rather than whoever they are level with (see climbTargetIdx: one\nlab-tier beyond the immediate neighbour, with a medalist carve-out).\nComputed over the FULL board even when it's locked, so a not-yet-on-the-board\nviewer still gets a real target rather than the far-off #1. nil when no one\nis ahead (the viewer leads) or there's no authenticated viewer. It names one\noperator; it never discloses the board's size or tail.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/api.leaderboardEntryDTO"
+                        }
+                    ]
+                },
+                "revealed": {
+                    "type": "integer"
+                },
+                "viewer": {
+                    "$ref": "#/definitions/api.leaderboardViewer"
+                }
+            }
+        },
+        "api.leaderboardViewer": {
+            "type": "object",
+            "properties": {
+                "authenticated": {
+                    "type": "boolean"
+                },
+                "hasClearedLab": {
+                    "type": "boolean"
+                },
+                "labsCompleted": {
+                    "description": "LabsCompleted is the viewer's own count, sent so the sidebar climb widget\ncan frame \"N labs behind\" without the viewer's row being in the revealed\nslice (a locked board only reveals the top ranks, never the viewer's tail\nposition). Zero for a viewer not found on the board.",
+                    "type": "integer"
+                },
+                "rank": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.progressResponse": {
+            "type": "object",
+            "properties": {
+                "answered": {
+                    "type": "integer"
+                },
+                "answers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "complete": {
+                    "type": "boolean"
+                },
+                "moduleSlug": {
+                    "type": "string"
+                },
+                "quizCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "course.Chip": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string"
+                },
+                "tone": {
+                    "description": "Tone is semantic, never a colour: accent = a key idea, warn = caution,\ndanger = a pitfall.",
+                    "type": "string"
+                }
+            }
+        },
+        "course.Course": {
+            "type": "object",
+            "properties": {
+                "moduleSlug": {
+                    "type": "string"
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/course.Step"
+                    }
+                }
+            }
+        },
+        "course.Diagram": {
+            "type": "object",
+            "properties": {
+                "caption": {
+                    "description": "Caption renders in the reserved y 240-270 band, so it can never collide\nwith the shapes above it.",
+                    "type": "string"
+                },
+                "shapes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/course.Shape"
+                    }
+                }
+            }
+        },
+        "course.Kind": {
+            "type": "string",
+            "enum": [
+                "concept",
+                "quiz",
+                "flag"
+            ],
+            "x-enum-varnames": [
+                "KindConcept",
+                "KindQuiz",
+                "KindFlag"
+            ]
+        },
+        "course.Point": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                }
+            }
+        },
+        "course.QuizOption": {
+            "type": "object",
+            "properties": {
+                "correct": {
+                    "type": "boolean"
+                },
+                "t": {
+                    "type": "string"
+                }
+            }
+        },
+        "course.Shape": {
+            "type": "object",
+            "properties": {
+                "anchor": {
+                    "type": "string"
+                },
+                "arrow": {
+                    "description": "Arrow defaults to true, so it is a pointer: a plain bool couldn't tell\n\"author wrote arrow: false\" from \"author didn't mention arrows\".",
+                    "type": "boolean"
+                },
+                "broken": {
+                    "type": "boolean"
+                },
+                "cx": {
+                    "description": "seal",
+                    "type": "number"
+                },
+                "cy": {
+                    "type": "number"
+                },
+                "dashed": {
+                    "type": "boolean"
+                },
+                "delay": {
+                    "type": "number"
+                },
+                "from": {
+                    "description": "wire",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/course.Point"
+                        }
+                    ]
+                },
+                "h": {
+                    "type": "number"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "r": {
+                    "type": "number"
+                },
+                "sub": {
+                    "type": "string"
+                },
+                "text": {
+                    "description": "label",
+                    "type": "string"
+                },
+                "to": {
+                    "$ref": "#/definitions/course.Point"
+                },
+                "tone": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "box | wire | label | seal",
+                    "type": "string"
+                },
+                "w": {
+                    "type": "number"
+                },
+                "x": {
+                    "description": "box",
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                }
+            }
+        },
+        "course.Step": {
+            "type": "object",
+            "properties": {
+                "aha": {
+                    "type": "string"
+                },
+                "body": {
+                    "description": "BodyHTML is the rendered form the client actually displays. Populated by\nRender, empty on a freshly parsed Step.",
+                    "type": "string"
+                },
+                "chip": {
+                    "$ref": "#/definitions/course.Chip"
+                },
+                "diagram": {
+                    "$ref": "#/definitions/course.Diagram"
+                },
+                "explain": {
+                    "type": "string"
+                },
+                "ey": {
+                    "type": "string"
+                },
+                "eyt": {
+                    "type": "string"
+                },
+                "index": {
+                    "description": "Index is the step's position, taken from the filename prefix rather than\na field, so \"what order do these go in\" is answerable by listing the\ndirectory instead of opening every file.",
+                    "type": "integer"
+                },
+                "kind": {
+                    "$ref": "#/definitions/course.Kind"
+                },
+                "opts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/course.QuizOption"
+                    }
+                },
+                "q": {
+                    "type": "string"
+                },
+                "revealLabel": {
+                    "type": "string"
+                },
+                "slug": {
+                    "description": "Slug is the file's basename without the ordering prefix (\"01-rbac.md\" -\u003e\n\"rbac\"). Stable across reordering, so progress records and deep links\ndon't break when a step is inserted in the middle.",
+                    "type": "string"
+                },
+                "tag": {
+                    "description": "Tag and Chip compete for the same top-right slot. Both set is rejected at\nparse time rather than silently resolved - the template picks chip, but\nan author who wrote both meant something and should be told which won.",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "--- concept steps ---",
+                    "type": "string"
+                }
+            }
+        },
+        "drivers.Driver": {
+            "type": "object",
+            "properties": {
+                "depends": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "isSigned": {
+                    "type": "boolean"
+                },
+                "license": {
+                    "type": "string"
+                },
+                "modName": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "signer": {
+                    "type": "string"
+                },
+                "sizeBytes": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "uploadedAt": {
+                    "type": "string"
+                },
+                "uploadedBy": {
+                    "type": "string"
+                },
+                "vermagic": {
+                    "type": "string"
+                },
+                "vetReason": {
+                    "type": "string"
+                },
+                "vettedAt": {
+                    "type": "string"
+                },
+                "vettedBy": {
+                    "type": "string"
+                },
+                "visibility": {
+                    "type": "string"
+                }
+            }
+        },
+        "health.Namespace": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/health.Pod"
+                    }
+                }
+            }
+        },
+        "health.Pod": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "ready": {
+                    "type": "string"
+                },
+                "restarts": {
+                    "type": "integer"
+                }
+            }
+        },
+        "labs.KernelKind": {
+            "type": "string",
+            "enum": [
+                "",
+                "ebpf",
+                "research-dev",
+                "research-hard"
+            ],
+            "x-enum-comments": {
+                "KernelDefault": "kata-fc",
+                "KernelEBPF": "kata-fc-ebpf",
+                "KernelResearchDev": "kata-fc-research-dev (KASAN+KCOV+BTF, unhardened)",
+                "KernelResearchHard": "kata-fc-research-hard (KASAN+KCOV+BTF, production mitigations)"
+            },
+            "x-enum-descriptions": [
+                "kata-fc",
+                "kata-fc-ebpf",
+                "kata-fc-research-dev (KASAN+KCOV+BTF, unhardened)",
+                "kata-fc-research-hard (KASAN+KCOV+BTF, production mitigations)"
+            ],
+            "x-enum-varnames": [
+                "KernelDefault",
+                "KernelEBPF",
+                "KernelResearchDev",
+                "KernelResearchHard"
+            ]
+        },
+        "labs.LiveUsage": {
+            "type": "object",
+            "properties": {
+                "gibMinutes": {
+                    "type": "number"
+                },
+                "reservedBytes": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                }
+            }
+        },
+        "labs.Module": {
+            "type": "object",
+            "properties": {
+                "defender": {
+                    "description": "HasDefender tells the frontend to show the Defender tab: true iff this\nmodule ships an in-guest sensor whose stream the Defender pane tails\n(Nested.Defender != nil). Computed centrally in init(), not authored per\nmodule. It is deliberately NOT the EBPF flag: the two coincided until the\nresearch labs, which have a Defender pane but select their kernel via\nKernel, not EBPF - gating the tab on EBPF would hide their sensor. Gating on\n\"does it actually have a defender\" is the real question and stays correct as\nthe kernel taxonomy grows. See docs/architecture/kasan-research-lab.md.",
+                    "type": "boolean"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "ebpf": {
+                    "description": "EBPF opts this module into an eBPF-capable guest kernel (BTF/kprobes/\ntracefs) so the student can run eBPF tooling - Tetragon, bpftrace - inside\ntheir own lab microVM. Per-session opt-in by design: only eBPF labs pay the\nheavier kernel, every other lab keeps the lean, fast-booting stock one. The\nbackend expresses this by selecting a dedicated RuntimeClass for the runner\npod (see Config.runtimeClassFor / buildRunnerPod); the eBPF caps and mounts\nthemselves live on the *nested* lab pod in Nested.Manifests, governed by the\nnested cluster's PodSecurity. See docs/architecture/ebpf-per-session.md.",
+                    "type": "boolean"
+                },
+                "hint": {
+                    "description": "a nudge, not the answer - see services/labs/\u003cslug\u003e/README.md for the full walkthrough",
+                    "type": "string"
+                },
+                "kernel": {
+                    "description": "Kernel selects the guest kernel (and thus RuntimeClass) this module's\nsession runs on, generalizing EBPF. Empty is the default lean kernel;\n\"ebpf\" is the eBPF-capable kernel (equivalent to EBPF: true, kept for the\nexisting modules); \"research-dev\" / \"research-hard\" are the KASAN+KCOV+BTF\ninstrumented kernels for the driver-research labs (the guest kernel is the\nexploitation target). Selected via Config.runtimeClassFor. The research\nkernels are KASAN+eBPF, so they also take the eBPF caps/mounts path (see\nusesEBPFKernel). See docs/architecture/kasan-research-lab.md.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/labs.KernelKind"
+                        }
+                    ]
+                },
+                "nested": {
+                    "description": "Nested carries the disposable-cluster spec. Required: Create rejects a\nmodule without one (see session.go).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/labs.NestedSpec"
+                        }
+                    ]
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "track": {
+                    "description": "Track is the tactic bucket the sidebar groups this module under (see\ntrackOf). Unlike Order, it IS serialised: the frontend renders the catalog\nas collapsible track sections (First Flight, then Recon, Privilege\nEscalation, ...) rather than one flat list, so it needs the label per\nmodule. Order still sorts labs WITHIN a track. Assigned centrally in\ninit() from trackOf so the buckets live in one readable place, not smeared\nacross every module literal.",
+                    "type": "string"
+                }
+            }
+        },
+        "labs.NestedSpec": {
+            "type": "object",
+            "properties": {
+                "entryPort": {
+                    "type": "integer"
+                }
+            }
+        },
+        "labs.Session": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "moduleSlug": {
+                    "type": "string"
+                },
+                "phase": {
+                    "description": "Phase is the last provisioning gate this session cleared while status is\n\"starting\" (one of the phase() milestones in provisionNested: \"pod-created\",\n\"pod-ready\", \"kubeconfig-fetched\", \"nested-node-ready\", \"manifests-applied\",\n\"foothold-ready\"). Empty until the first gate clears, and meaningless once\nrunning. The provisioning UI reads it to anchor its progress bar to real\nbackend progress instead of a wall-clock guess - so a slow (busy-hours)\nboot no longer runs the bar ahead of reality. Written under Manager.mu by\nthe provision goroutine, read under it by Get.",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "\"starting\", \"running\", \"error\"",
+                    "type": "string"
+                }
+            }
+        },
+        "topology.ArgoSignal": {
+            "type": "object",
+            "properties": {
+                "outOfSync": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "synced": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "topology.Capacity": {
+            "type": "object",
+            "properties": {
+                "byUser": {
+                    "description": "ByUser breaks the reserved totals down by the user whose sessions hold\nthem, so the admin charts can attribute consumption (who is using how much)\nrather than only showing the aggregate. Every reserved byte belongs to some\nuser's session - there is no unattributed platform overhead in these\nnumbers - so the parts sum to the totals above. Sorted heaviest-first and\ncapped: past a handful of users the tail folds into a single \"others\" row\n(User == \"\"), keeping the stacked column readable.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.CapacityUser"
+                    }
+                },
+                "cpuAllocatableMillis": {
+                    "type": "integer"
+                },
+                "cpuReservedMillis": {
+                    "description": "CPU, in millicores. Reserved is the sum of live sessions' CPU requests;\nAllocatable is the labs node(s) total. There is no \"used\" here by design -\nsee the type comment.",
+                    "type": "integer"
+                },
+                "cpuSystemReservedMillis": {
+                    "type": "integer"
+                },
+                "memAllocatableBytes": {
+                    "type": "integer"
+                },
+                "memBudgetBytes": {
+                    "type": "integer"
+                },
+                "memReservedBytes": {
+                    "description": "Memory, in bytes. Reserved is the sum of live sessions' SessionMemory;\nBudget is the admission gate's ceiling (0 = disabled); Allocatable is the\nlabs node(s) total. Budget usually sits below Allocatable on purpose - the\nbackend refuses just before the scheduler would.",
+                    "type": "integer"
+                },
+                "memSystemReservedBytes": {
+                    "description": "SystemReserved is the non-lab baseline: the summed requests of the platform\npods scheduled on the labs node(s) - DaemonSets (tetragon, CNI), coredns and\nthe like - which hold real allocatable before any session starts. Shown as a\nmuted base under the lab usage so a column reads as honest headroom rather\nthan empty. Excludes session-runner pods, which are the MemReserved above.",
+                    "type": "integer"
+                }
+            }
+        },
+        "topology.CapacityUser": {
+            "type": "object",
+            "properties": {
+                "cpuMillis": {
+                    "type": "integer"
+                },
+                "memBytes": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                },
+                "user": {
+                    "description": "username, or \"\" for the folded \"others\" row",
+                    "type": "string"
+                }
+            }
+        },
+        "topology.CertSignal": {
+            "type": "object",
+            "properties": {
+                "expiring": {
+                    "description": "ns/name, expiring \u003c certWarnDays",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "soonestDays": {
+                    "type": "integer"
+                }
+            }
+        },
+        "topology.Dashboard": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                }
+            }
+        },
+        "topology.Edge": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                }
+            }
+        },
+        "topology.Layer": {
+            "type": "object",
+            "properties": {
+                "icon": {
+                    "type": "string"
+                },
+                "kind": {
+                    "description": "\"net\" | \"wall\" | \"warn\"",
+                    "type": "string"
+                },
+                "nodeRole": {
+                    "type": "string"
+                },
+                "sub": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "topology.Namespace": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Pod"
+                    }
+                },
+                "resources": {
+                    "$ref": "#/definitions/topology.NsResources"
+                }
+            }
+        },
+        "topology.NestedCluster": {
+            "type": "object",
+            "properties": {
+                "edges": {
+                    "description": "Edges is the nested cluster's internal communication graph - currently\nthe lab's cross-namespace escape path (foothold -\u003e the Secret it was never\nmeant to reach), derived from the enumerated contents. See escapeEdges.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Edge"
+                    }
+                },
+                "error": {
+                    "type": "string"
+                },
+                "namespaces": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Namespace"
+                    }
+                },
+                "reachable": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "topology.Node": {
+            "type": "object",
+            "properties": {
+                "allocatableCpuMillis": {
+                    "description": "Allocatable is what the scheduler may hand out on this node (Status.\nAllocatable, i.e. capacity minus system/kube reservations). It is the\nhonest denominator for the capacity summary: sessions are scheduled\nagainst allocatable, not raw hardware.",
+                    "type": "integer"
+                },
+                "allocatableMemBytes": {
+                    "type": "integer"
+                },
+                "kernel": {
+                    "description": "from Status.NodeInfo.KernelVersion",
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "description": "from Status.NodeInfo.OSImage",
+                    "type": "string"
+                },
+                "ready": {
+                    "type": "boolean"
+                },
+                "role": {
+                    "description": "\"control-plane\" | \"labs\" | \"worker\"",
+                    "type": "string"
+                },
+                "runtime": {
+                    "description": "from Status.NodeInfo.ContainerRuntimeVersion",
+                    "type": "string"
+                }
+            }
+        },
+        "topology.NsResources": {
+            "type": "object",
+            "properties": {
+                "configMaps": {
+                    "type": "integer"
+                },
+                "networkPolicies": {
+                    "type": "integer"
+                },
+                "roleBindings": {
+                    "type": "integer"
+                },
+                "roles": {
+                    "type": "integer"
+                },
+                "secretNames": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "secrets": {
+                    "type": "integer"
+                },
+                "serviceAccounts": {
+                    "type": "integer"
+                },
+                "services": {
+                    "type": "integer"
+                }
+            }
+        },
+        "topology.Pod": {
+            "type": "object",
+            "properties": {
+                "app": {
+                    "description": "App is the pod's app.kubernetes.io/name label - the stable key the\nstatic wiring's edges/dashboards match on (a Helm release can name the\nworkload \u003crelease\u003e-\u003cchart\u003e, e.g. backend-backend, so the name-derived\nWorkload isn't reliable for matching; the label is). Empty if unlabelled;\nthe frontend then falls back to Workload/name.",
+                    "type": "string"
+                },
+                "containers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "cpuRequestMillis": {
+                    "type": "integer"
+                },
+                "ip": {
+                    "type": "string"
+                },
+                "memRequestBytes": {
+                    "description": "Scheduler-visible resource requests summed over the pod's containers. The\ncapacity summary sums these across non-session pods on the labs node to\ndraw the platform baseline (see Capacity.MemSystemReservedBytes).",
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "ready": {
+                    "type": "string"
+                },
+                "restarts": {
+                    "type": "integer"
+                },
+                "workload": {
+                    "type": "string"
+                }
+            }
+        },
+        "topology.ScopedTopology": {
+            "type": "object",
+            "properties": {
+                "boundary": {
+                    "description": "Boundary is the id of the opaque outside-your-lab node.",
+                    "type": "string"
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Edge"
+                    }
+                },
+                "error": {
+                    "description": "Error explains an unreachable cluster in the student's terms.",
+                    "type": "string"
+                },
+                "namespaces": {
+                    "description": "Namespaces are the student's own nested cluster's, including pod names\nand container lists. Safe: this cluster is the disposable target, created\nfor them and destroyed with their session.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Namespace"
+                    }
+                }
+            }
+        },
+        "topology.Session": {
+            "type": "object",
+            "properties": {
+                "cluster": {
+                    "$ref": "#/definitions/topology.NestedCluster"
+                },
+                "gibMinutes": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "module": {
+                    "type": "string"
+                },
+                "reservedBytes": {
+                    "description": "ReservedBytes is the memory this session holds on the labs node\n(labs.SessionMemory), and GiBMinutes is what it has accrued so far\n(reservation x minutes alive). Both are the live cost, set by the topology\nhandler from the session manager - the admin map is where an operator wants\nto see what each running lab is actually costing, not just that it exists.",
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "topology.Signals": {
+            "type": "object",
+            "properties": {
+                "argo": {
+                    "$ref": "#/definitions/topology.ArgoSignal"
+                },
+                "certs": {
+                    "$ref": "#/definitions/topology.CertSignal"
+                }
+            }
+        },
+        "topology.Topology": {
+            "type": "object",
+            "properties": {
+                "capacity": {
+                    "$ref": "#/definitions/topology.Capacity"
+                },
+                "dashboards": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Dashboard"
+                    }
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Edge"
+                    }
+                },
+                "layers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Layer"
+                    }
+                },
+                "namespaces": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Namespace"
+                    }
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Node"
+                    }
+                },
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/topology.Session"
+                    }
+                },
+                "signals": {
+                    "$ref": "#/definitions/topology.Signals"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Bearer \u003ctoken\u003e (see internal/api/auth.go). The same JWT also works as an HttpOnly cookie for browser requests, but that can't be expressed as a header-based security scheme here.",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

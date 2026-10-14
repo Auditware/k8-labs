@@ -1,0 +1,28 @@
+# Tilt-only - copies a binary pre-built on the host (see Tiltfile's
+# `backend-compile` local_resource), never runs `go build` itself. The
+# whole point is skipping the compile-inside-Docker step so a save-to-pod
+# loop takes seconds, not a full docker build/push/helm-upgrade cycle.
+# Not used by CI or any real deployment - that's Dockerfile, untouched.
+#
+# Alpine, not distroless: Tilt's live_update restart mechanism
+# (docker_build_with_restart, see Tiltfile) runs `touch`/injects its own
+# wrapper binary into the image at build time, which needs a shell/basic
+# coreutils present - distroless deliberately has neither. Relaxing that
+# hardening is fine here specifically because this image only ever runs
+# on a developer's own local k3d cluster, never anywhere real.
+FROM alpine:3
+RUN addgroup -S app && adduser -S app -G app
+WORKDIR /app
+COPY bin/backend ./backend
+# live_update re-syncs this binary at runtime by tar-extracting as the
+# container's own user (app, UID 100). Two things had to be true for that
+# to actually work, found by watching it fail twice: the file itself has
+# to be app-owned (COPY runs as root), and - the part that isn't obvious -
+# so does the *directory* it lives in, since tar needs to remove/replace
+# the directory entry, not just write the file's own bytes. A binary
+# living straight at "/" fails even once chowned, because "/" itself
+# stays root-owned; /app owned by app end to end sidesteps that.
+RUN chown -R app:app /app
+USER app
+EXPOSE 8080
+ENTRYPOINT ["/app/backend"]

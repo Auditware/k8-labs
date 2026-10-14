@@ -1,0 +1,6 @@
+apiVersion: v2
+name: labs
+description: Static scaffolding for lab sessions (Namespace, RBAC) - the per-session pods themselves are created dynamically by the Backend via client-go, not by this chart. See docs/architecture/lab-pod-shape.yaml.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

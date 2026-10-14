@@ -1,0 +1,41 @@
+image:
+  repository: postgres
+  tag: "16-alpine"
+  pullPolicy: IfNotPresent
+
+# Single instance, no HA yet. CloudNativePG is the
+# upgrade path if HA/backups become necessary; not needed at this scale.
+replicaCount: 1
+
+service:
+  port: 5432
+
+storage:
+  size: 5Gi
+  # Empty = cluster default StorageClass (local-path in k3d, whichever
+  # real one prod's Metal/System VM nodes provide - same class Vault uses).
+  storageClassName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Dev-only dummy values, mirrors secrets/backend.env. Real environments
+# will source these from Vault instead once that is built - this
+# chart doesn't have a vault.enabled toggle yet because in-cluster Postgres
+# Vault-sourcing isn't designed yet.
+# existingSecret (prod): name of a pre-created Secret holding POSTGRES_USER/
+# POSTGRES_PASSWORD/POSTGRES_DB, created out-of-band so the real password never
+# lands in git. When set, the chart renders no Secret of its own and the
+# `credentials` block below is ignored. Empty = local/Tilt dev path (renders
+# the dummy credentials). Set via the ArgoCD Application (name only, not secret).
+existingSecret: ""
+
+credentials:
+  databaseUser: backend
+  databasePassword: devpassword
+  databaseName: platform

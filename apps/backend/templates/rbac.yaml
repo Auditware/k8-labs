@@ -1,0 +1,68 @@
+# Read-only, cluster-wide - separate from apps/labs/templates/rbac.yaml's
+# ClusterRole, which grants create/delete on Pods+Services but only in the
+# labs/labs-baseline namespaces (session provisioning). This one backs the
+# admin health dashboard (GET/LIST/WATCH only, no secrets, no mutation) -
+# cluster-wide because the components it reports on span most of the
+# cluster's namespaces (default, labs, labs-baseline, cert-manager, vault,
+# argocd, observability, kube-system), not because it needs to be broad for
+# its own sake. Read-only pod/namespace status isn't sensitive the way
+# create/delete or Secret access would be.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backend-cluster-health
+rules:
+  # pods+namespaces back the health dashboard; nodes back the topology map's
+  # node regions + host-substrate facts (kernel/runtime from Status.NodeInfo).
+  # All read-only - no secrets, no mutation. See internal/topology.
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Health-signal overlays (internal/topology/signals.go): ArgoCD Application
+  # drift + cert-manager Certificate expiry. Read-only on the CR status; note
+  # these are the objects, not their referenced Secrets (which we never read).
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  # The labs-node substrate is derived from whether the kata-fc RuntimeClass
+  # exists (prod) or not (local runc) - see internal/topology.LayersFor.
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get", "list", "watch"]
+  # Per-namespace security-relevant resource inventory (internal/topology/
+  # resources.go): services/serviceaccounts (core), roles/rolebindings (rbac),
+  # networkpolicies (networking). Non-sensitive - names/specs, no data.
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  # Deliberately NO secrets/configmaps grant. `list secrets` has no
+  # metadata-only RBAC verb, so granting it would authorize reading Secret
+  # data cluster-wide - too large a blast radius for an internet-facing SA,
+  # even though our code only reads names/counts. The outer-cluster topology
+  # therefore ships with an empty Secret/ConfigMap inventory (builder passes
+  # meta=nil, see internal/topology/resources.go). Same in local so the two
+  # environments stay identical. The one Secret that matters pedagogically -
+  # the lab flag - lives in each session's NESTED cluster, which is read
+  # through that session's own kubeconfig, not this ClusterRole.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backend-cluster-health
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "backend.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: backend-cluster-health
+  apiGroup: rbac.authorization.k8s.io

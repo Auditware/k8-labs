@@ -1,0 +1,56 @@
+# Secrets - plaintext must never be committed. All env files live under
+# secrets/ (see secrets/README.md); nothing else in the repo should have its
+# own .env. Copy the committed *.example templates to create your local *.env
+# files.
+secrets/*.env
+!secrets/*.env.example
+secrets/*.secret
+*.pem
+*.key
+kubeconfig*
+*.kubeconfig
+
+# Vault
+*unseal*key*
+*.vault-token
+
+# Terraform / IaC local state (if ever used ad hoc)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Kind / local cluster bootstrap
+kind-config-local.yaml
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+coverage/
+*.tsbuildinfo
+
+# Go
+/bin/
+/vendor/
+# Tilt's compiled dev binary - see Tiltfile
+services/backend/bin/
+
+# Tilt
+tilt_build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.gitsecret/keys/random_seed
+!*.secret
+
+# session-runner baked foothold image (build artifact, produced by docker save)
+services/session-runner/airgap/

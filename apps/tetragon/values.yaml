@@ -1,0 +1,4 @@
+# The session-runner namespace - the only place lab activity is visible to the
+# host kernel at all. See templates/process-creds-changed.yaml for what this does
+# and does not observe under runc (local) vs Kata (prod).
+runnerNamespace: labs-runners

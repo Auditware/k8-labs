@@ -1,0 +1,98 @@
+# Two Ingresses so the admin paths can carry an extra middleware (IP-allowlist)
+# that the public /api path must NOT have:
+#   - backend            : /api/*  -> security-headers only (public app traffic)
+#   - backend-admin      : /admin/*, /ui, /v1 -> security-headers + IP-allowlist
+# Plain networking.k8s.io/v1 Ingress (portable, not Traefik's IngressRoute CRD);
+# Traefik respects standard Ingress objects. adminPaths are deliberately exact
+# sub-paths, not a blanket /admin, so they don't swallow the frontend's own
+# client-side /admin route (the SPA dashboard page, served by the frontend
+# Ingress). /ui and /v1 are Vault's own hardcoded paths (see internal/api/
+# routes.go). Middlewares are prod-only (traefikMiddleware.enabled).
+{{- if .Values.ingress.enabled }}
+{{- $mw := printf "%s-%s-security-headers@kubernetescrd" .Release.Namespace (include "backend.fullname" .) }}
+{{- $adminMw := $mw }}
+{{- if .Values.traefikMiddleware.adminAllowCIDRs }}
+{{- $adminMw = printf "%s,%s-%s-admin-ipallowlist@kubernetescrd" $mw .Release.Namespace (include "backend.fullname" .) }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "backend.fullname" . }}
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.tls.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuerName }}
+    {{- end }}
+    {{- if .Values.traefikMiddleware.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $mw }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ include "backend.fullname" . }}-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "backend.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+          {{- /* Backend paths outside /api that any signed-in user may reach:
+                 same security-headers treatment as /api, deliberately NOT the
+                 admin IP-allowlist. /swagger lives here because the API docs
+                 are now per-user (the spec is filtered to the caller's access
+                 level, see internal/api/apidocs.go) rather than admin-only.
+                 Listing a path here is what routes it to the backend at all -
+                 anything not on this Ingress or the admin one below falls
+                 through to the frontend and 404s. */}}
+          {{- range .Values.ingress.userPaths }}
+          - path: {{ . }}
+            pathType: {{ $.Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "backend.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "backend.fullname" . }}-admin
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.traefikMiddleware.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $adminMw }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  # Same host + cert as the main Ingress (which owns the cert-manager request);
+  # no cert-manager annotation here so only one Certificate is issued.
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ include "backend.fullname" . }}-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- range .Values.ingress.adminPaths }}
+          - path: {{ . }}
+            pathType: {{ $.Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "backend.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+{{- end }}

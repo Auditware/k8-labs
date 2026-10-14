@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: labs
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: k8labs
+  source:
+    repoURL: https://github.com/Auditware/k8-labs.git
+    targetRevision: main
+    path: apps/labs
+    # Prod CIDRs for the runner egress NetworkPolicy's "except" list. The chart
+    # defaults are k3d's (10.42/10.43); prod is Cilium pod 10.0.0.0/8 + kubeadm
+    # service 10.96.0.0/12. Wrong values here = the nested cluster could reach
+    # the outer pods/API (the F1 containment hole). Prod-only override.
+    helm:
+      parameters:
+        - name: network.podCIDR
+          value: 10.0.0.0/8
+        - name: network.serviceCIDR
+          value: 10.96.0.0/12
+        # Prod runs on Kata/Firecracker, so enforce it: reject any runner pod not
+        # pinned to a Kata RuntimeClass (see apps/labs values.yaml +
+        # templates/validatingadmissionpolicy-runtimeclass.yaml). Off in the chart
+        # default for local k3d (runc); on here so a runtimeClass regression fails
+        # loud instead of silently dropping the microVM.
+        - name: requireKataRuntimeClass
+          value: "true"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  # See postgres.yaml for why this is manual-sync only for now.
+  # Auto-sync (prod-only ArgoCD; see postgres.yaml for the full rationale).
+  # selfHeal reverts drift, prune off so nothing is auto-deleted. Deploys stay
+  # gated by the pin-bump commit.
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

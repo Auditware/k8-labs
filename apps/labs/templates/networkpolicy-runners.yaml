@@ -1,0 +1,126 @@
+# Default-deny + explicit-allow for the session-runner pods (nested-shape
+# modules). This is Wall 2 (the network wall) for the nested lab model, and it's
+# load-bearing: a nested pod's traffic egresses THROUGH the runner pod's network
+# namespace (SNAT'd to the runner pod IP), so from Cilium's view all nested
+# traffic originates from the runner pod - this policy governs the whole nested
+# cluster's reachability, not just the runner process itself.
+#
+# Without it (proven in F1), a nested-cluster attacker can reach the OUTER
+# kube-apiserver and the Backend over the pod network - the microVM does NOT
+# stop this (it's L3 routing, not a kernel boundary), so the hole exists in prod
+# too. What this enforces:
+#   - Ingress: only the Backend may open a connection, and only to the nested
+#     API port (6443) - the dial for provisioning/terminal (internal/labs/
+#     nested.go, terminal.go). No other session's runner, nothing else.
+#   - Egress: DNS resolves. Everything INSIDE the cluster's pod/service CIDRs is
+#     blocked - the outer API, Postgres, the Backend, every other session's
+#     runner. The internet is blocked too, unless the module opts in (below).
+#
+# Internet egress used to be granted to every runner unconditionally. It was
+# left over from before the image tars were baked into the runner image, and it
+# had stopped being needed: the nested cluster is fully airgapped (see
+# services/session-runner/Dockerfile - pause, coredns and the lab images are all
+# preloaded from /opt/airgap), and no lab manifest or course page references an
+# external URL.
+#
+# What it was still doing was handing every student a general-purpose egress
+# node. Because nested traffic SNATs through the runner pod, anything done from
+# inside a lab leaves from the labs node's own public IP: mining, port scanning,
+# and exfiltration all looked like they came from us. Since sessions are handed
+# root on purpose, that is not a hypothetical.
+#
+# So egress is now opt-in per module (Module.NeedsEgress -> the pod label below).
+# A future lab that genuinely teaches egress detection can ask for it explicitly;
+# the default is no route off the box. Note this does NOT affect pulling the
+# runner image itself - that is the kubelet's job on the node, and NetworkPolicy
+# does not apply to it.
+#
+# One namespace only (the runner namespace), not the per-namespace range the lab
+# policy uses - runners all live in labs-runners.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-default-deny
+  namespace: {{ .Values.runnerNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: session-runner
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-allow-dns-egress
+  namespace: {{ .Values.runnerNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: session-runner
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Opt-in internet egress. The podSelector carries the extra
+# k8labs.io/egress: allowed label, which the backend sets ONLY for modules that
+# declare Module.NeedsEgress (see internal/labs/runner.go). A runner without
+# that label matches no egress rule beyond DNS, so default-deny stands.
+#
+# No module sets it today, and that is the intended steady state - this stays
+# here so enabling egress for one future lab is a registry field rather than a
+# policy rewrite under time pressure.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-allow-external-egress
+  namespace: {{ .Values.runnerNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: session-runner
+      k8labs.io/egress: allowed
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - {{ .Values.network.podCIDR }}
+              - {{ .Values.network.serviceCIDR }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-allow-api-ingress-from-backend
+  namespace: {{ .Values.runnerNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: session-runner
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.backend.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 6443

@@ -1,0 +1,290 @@
+# driver-research - a KERNEL-exploitation research sandbox. The researcher gets a
+# shell carrying the capabilities needed to load a driver into the guest kernel
+# and exploit it, and watches an in-guest eBPF sensor (Tetragon) catch the
+# kernel-credential transitions that a successful LPE produces, in the Defender
+# pane.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). Referenced from Go as
+# driverResearchManifests and SHARED by two modules (driver-research-dev,
+# driver-research-hard) that differ only in the guest kernel handed to the
+# session runner - this one bundle serves both.
+#
+# Unlike the RBAC and escape labs there is NO planted flag and NO vulnerable
+# RBAC: this is not a Kubernetes-misconfiguration lab. The "target" is the guest
+# KERNEL itself, and the real isolation is the Firecracker microVM (kata-fc) the
+# nested node runs inside - see the securityContext note on the workstation pod.
+# The eBPF sensor is the product here, not admin surveillance: it and its output
+# belong to the researcher, streamed to their own Defender pane.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+# Where the in-guest sensor runs. Kept out of `lab` so the researcher's own
+# namespace stays clean to explore; the Defender pane tails the tetragon pod
+# here by the app=tetragon label.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tetragon
+---
+# Explicit SA for the workstation pod - without it the pod falls back to the
+# namespace `default` SA, which k3s creates asynchronously and the backend's
+# fast sequential apply can beat ("serviceaccount default not found"). The token
+# is never mounted; this SA exists only to satisfy admission.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tetragon
+  namespace: tetragon
+---
+# The detection policy: hook the kernel's commit_creds(), called whenever a
+# process's credentials are installed. A kernel privilege-escalation exploit -
+# the whole point of this lab - classically ends in
+# commit_creds(prepare_kernel_cred(NULL)) to take root, so this is exactly the
+# transition a driver exploit produces, invisible in any shell output but plain
+# to the kernel. Byte-for-byte the same hook the platform's own host sensor uses;
+# here it's a plain TracingPolicy (cluster kind, loaded from
+# --tracing-policy-dir) rather than the namespaced CRD, since a throwaway
+# single-tenant nested cluster needs no operator/CRD to scope it. No flag rides
+# the event - research modules have no flag; the sensor output is the product.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-policies
+  namespace: tetragon
+data:
+  process-creds-changed.yaml: |
+    apiVersion: cilium.io/v1alpha1
+    kind: TracingPolicy
+    metadata:
+      name: process-creds-changed
+    spec:
+      kprobes:
+        - call: "commit_creds"
+          message: "commit_creds: kernel credentials installed"
+          syscall: false
+          args:
+            - index: 0
+              type: "cred"
+          selectors:
+            - matchActions:
+                - action: Post
+                  rateLimit: "5s"
+---
+# Tetragon as a bare DaemonSet - no Helm chart, no operator, no CRDs. Two
+# containers:
+#   - tetragon: loads the eBPF (CO-RE via the guest kernel's BTF), attaches the
+#     commit_creds kprobe, serves events on a unix gRPC socket. privileged
+#     because it loads BPF and mounts bpffs/tracefs; the blast radius is the
+#     throwaway microVM (Wall 1), the whole point of the Kata design - see the
+#     security note in docs/architecture/ebpf-per-session.md.
+#   - export-stdout: streams events from that socket to stdout as JSON, so the
+#     Defender pane (Slice C) can tail this container's log via the nested
+#     kubeconfig. Reuses the same image (its `tetra` CLI) - no second baked
+#     image.
+# --enable-k8s-api=false on purpose: the sensor observes by kernel, not by pod
+# metadata, so it needs no nested-API access - one less failure mode in prod.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tetragon
+  namespace: tetragon
+  labels:
+    app: tetragon
+spec:
+  selector:
+    matchLabels:
+      app: tetragon
+  template:
+    metadata:
+      labels:
+        app: tetragon
+    spec:
+      serviceAccountName: tetragon
+      # eBPF observes every process on the nested node's kernel; hostPID lets
+      # Tetragon resolve their /proc metadata (the runner microVM's proc).
+      hostPID: true
+      containers:
+        - name: tetragon
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          securityContext:
+            privileged: true
+          # Mount a FRESH, private bpffs before starting the agent so its pinned
+          # maps live in this sensor's own bpf filesystem instance, not the
+          # shared host /sys/fs/bpf. In prod each session's microVM already has
+          # its own kernel + bpffs, so this is effectively a no-op; locally
+          # (runc, shared host kernel) it is what keeps the nested sensor from
+          # colliding with the platform's own Tetragon, which pins under
+          # /sys/fs/bpf/tetragon too. Same isolation model in both environments -
+          # see docs/architecture/ebpf-per-session.md ("local bpffs coexistence").
+          command:
+            - sh
+            - -c
+            - |
+              # Mount the pseudo-filesystems the sensor needs in its OWN mount
+              # namespace (privileged), rather than via hostPath volumes: a
+              # Bidirectional hostPath needs the node's /sys to be a shared mount,
+              # which the nested k3s node's /sys is NOT (found live, 2026-07). Doing
+              # it here is self-contained and works the same in prod, where the Kata
+              # guest may not pre-mount tracefs either.
+              #  - bpf: a FRESH private bpffs so pinned maps never touch the shared
+              #    host /sys/fs/bpf (the local bpffs-coexistence fix).
+              #  - debugfs/tracefs: kprobe attach point.
+              mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+              mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+              mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+              exec /usr/bin/tetragon \
+                --enable-k8s-api=false \
+                --tracing-policy-dir=/etc/tetragon/tetragon.tp.d \
+                --export-filename=/var/run/cilium/tetragon/tetragon.log \
+                --server-address=unix:///var/run/tetragon/tetragon.sock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            # Private bpffs (emptyDir shadows the host mount; the command above
+            # mounts a fresh bpf filesystem onto it) - the isolation lever.
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+            - name: export-log
+              mountPath: /var/run/cilium/tetragon
+            # subPath projects ONLY the real policy file into the dir. A plain
+            # ConfigMap mount also creates k8s's `..data` symlink + a timestamped
+            # dir, and --tracing-policy-dir walks both -> loads the policy twice
+            # -> "a sensor collection with the key already exists" and the agent
+            # exits. subPath avoids the symlink structure. (Found live, 2026-07.)
+            - name: tracing-policy
+              mountPath: /etc/tetragon/tetragon.tp.d/process-creds-changed.yaml
+              subPath: process-creds-changed.yaml
+              readOnly: true
+        - name: export-stdout
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          # Stream events from the agent's gRPC socket to stdout. The Defender
+          # pane tails THIS container's log. -o json so the frontend can parse.
+          command:
+            - tetra
+            - getevents
+            - -o
+            - json
+            - --server-address
+            - unix:///var/run/tetragon/tetragon.sock
+          volumeMounts:
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+      volumes:
+        # emptyDir, NOT hostPath: the agent mounts its own bpffs here (see the
+        # tetragon container's command) so its pinned maps never touch the shared
+        # host /sys/fs/bpf. This is the local bpffs-coexistence fix.
+        - name: bpf-maps
+          emptyDir: {}
+        - name: tetragon-run
+          emptyDir: {}
+        - name: export-log
+          emptyDir: {}
+        - name: tracing-policy
+          configMap:
+            name: tetragon-policies
+---
+# The researcher's workstation: the entry pod the terminal attaches to via exec
+# (EntryPort 0). No SUID bait, no planted flag - a plain research shell holding
+# the capabilities and device access a kernel-driver exploit needs. The lab is
+# the guest kernel; the Defender pane below catches the commit_creds transition
+# a working exploit produces.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  # Cosmetic: the shell prompt reads root@driver-research. Shared by both the
+  # -dev and -hard modules (they differ only in the guest kernel, not here).
+  hostname: driver-research
+  serviceAccountName: station
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  volumes:
+    # The guest node's /dev - the device nodes a loaded driver exposes and the
+    # researcher opens to reach it. hostPath, so it is the microVM guest's own
+    # /dev, mounted read-write.
+    - name: dev
+      hostPath:
+        path: /dev
+        type: Directory
+    # debugfs: KCOV / tracefs coverage surface and the kprobe attach point used
+    # to drive and observe the driver under test, mounted read-write.
+    # DirectoryOrCreate so the pod still starts on a node that has not
+    # pre-mounted debugfs (the researcher can mount it with CAP_SYS_ADMIN).
+    - name: debugfs
+      hostPath:
+        path: /sys/kernel/debug
+        type: DirectoryOrCreate
+    # User-selected, admin-vetted research drivers (see docs/architecture/
+    # research-driver-catalog.md). The backend creates the research-drivers
+    # Secret in this namespace BEFORE this manifest is applied, but only when a
+    # session actually selected drivers - optional: true so every other research
+    # session (and both labs by default) starts with no Secret present.
+    - name: drivers
+      secret:
+        secretName: research-drivers
+        optional: true
+  containers:
+    - name: shell
+      # The research workstation image: foothold + the kernel-exploitation
+      # toolchain (gcc/gdb/pahole/strace/ripgrep/kmod) and the target driver +
+      # fuzzer sources under /app (see services/session-runner/research). Baked
+      # into the runner image and imported into this nested cluster only for
+      # research sessions (SESSION_RESEARCH=1), so imagePullPolicy: Never holds.
+      image: k8labs-research:1.0
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      # Privileged, deliberately: the researcher loads a driver into the guest
+      # kernel (insmod needs SYS_MODULE) and then OPENS the char device it exposes
+      # (/dev/kuaf) to drive it - and a container's device cgroup blocks access to
+      # any device outside its allowlist unless it is privileged (there is no pod
+      # field to allow a single dynamic misc device). Privileged also carries the
+      # SYS_PTRACE/SYS_ADMIN/SYS_RESOURCE/MKNOD the exploit uses. The effective set
+      # is still bounded by the runner's caps (which carry SYS_MODULE for research
+      # - see runner.go). This is a deliberately powerful shell because the guest
+      # KERNEL is the intended target - the real isolation is the Firecracker
+      # microVM (kata-fc) the nested node runs inside, NOT the container boundary.
+      # Nothing here crosses the microVM wall.
+      securityContext:
+        runAsUser: 0
+        privileged: true
+      volumeMounts:
+        - name: dev
+          mountPath: /dev
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+        # Selected drivers land here read-only as <name>-<hash>.ko plus an
+        # index.json; `research-driver ls|load` reads them. Empty when no Secret
+        # was created (optional volume above), so the mount is harmless.
+        - name: drivers
+          mountPath: /opt/drivers
+          readOnly: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"

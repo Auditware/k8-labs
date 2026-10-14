@@ -1,0 +1,42 @@
+# The RuntimeClass eBPF-opted lab modules pin to in prod (see
+# apps/backend/values.yaml config.labsRuntimeClassEbpf="kata-fc-ebpf" and
+# internal/labs/config.go's runtimeClassFor). Same Kata+Firecracker microVM as
+# kata-fc, but its containerd handler points at a guest kernel built WITH
+# BTF+kprobes+tracefs, so a student can run eBPF tooling (Tetragon) INSIDE their
+# own lab microVM. The default kata-fc stays byte-for-byte as today - only eBPF
+# labs pay the heavier kernel (per-session opt-in). See
+# docs/architecture/ebpf-per-session.md.
+#
+# Prereqs on the labs node before this resolves (see infra/cluster/kubeadm-2node.md
+# "kata-fc-ebpf" step) - a superset of kata-fc's:
+#   - kata-fc already working (this reuses its /opt/kata + devmapper snapshotter).
+#   - the eBPF guest kernel installed under /opt/kata/share/kata-containers/
+#     (interim: the -debug kernel kata-static already ships; production: a lean
+#     kernel with only the tracing config flags - see the plan doc's "The kernel").
+#   - a containerd runtime handler "kata-fc-ebpf" whose ConfigPath is a
+#     configuration-fc-ebpf.toml identical to configuration-fc.toml except
+#     `kernel =` points at that eBPF kernel; containerd restarted once.
+#
+# handler must match that containerd runtime handler name. Apply this to the
+# workload cluster after the node config lands (not part of the cluster bootstrap).
+#
+# No spec.overhead, for the same reason as kata-fc (see that file's note):
+# labs.SessionMemory already reserves the whole measured session cost as the
+# pod's memory request, request equals limit, so declaring the microVM again as
+# overhead would double-charge it.
+#
+# The number that makes this class expensive is the guest kernel, and it is
+# worth stating plainly: measured 2026-07-23, an eBPF session's VM is 1929 MiB
+# against 1049 MiB for kata-fc - the interim -debug kernel costs ~880 MiB per
+# session, which is most of the difference and roughly halves eBPF concurrency
+# (~24 sessions instead of ~40). Swapping in the lean tracing-only kernel above
+# is therefore worth about 880 MiB per concurrent eBPF student; revisit
+# labs.SessionMemory when it lands.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc-ebpf
+handler: kata-fc-ebpf
+scheduling:
+  nodeSelector:
+    k8labs.io/role: labs

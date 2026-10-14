@@ -1,0 +1,245 @@
+# ebpf-egress - the eBPF sensor sees the network beacon your shell hides.
+#
+# Applied by the backend INTO a disposable nested k3s cluster, one per session
+# (see internal/labs/nested.go's applyNestedManifests). The student has a
+# foothold and wants to do what an implant does next: call home. They open an
+# outbound connection to a collector on the C2 port. The catch: an eBPF sensor
+# (Tetragon) hooks the kernel's tcp_connect(), so the connection is logged at the
+# socket - destination and all - the instant it is initiated, whether or not it
+# succeeds and whether or not the process is still around afterwards. The flag
+# rides that egress alert.
+#
+# The lesson - the fourth angle on the same eBPF theme - is that a process can
+# scrub its history, unset its args, and exit, but it cannot un-send a SYN: the
+# kernel saw the connect. Network telemetry from eBPF does not depend on the
+# tool, the port being "normal", or the process staying alive. What a defender
+# gets: every outbound connection, keyed to the process and destination, from
+# below userspace. The policy here narrows to the C2 port so the flag marks the
+# student's own beacon, not the cluster's ambient traffic.
+#
+# Containment: everything is the disposable nested cluster (the Kata microVM
+# guest in prod, the runner pod's own container under runc locally). The
+# collector is an in-cluster nc listener; nothing leaves the session. No new
+# image; the foothold and collector both use the baked k8labs-foothold:1.31.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: station
+  namespace: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: collector
+  namespace: lab
+---
+# The attacker's collector: a plain TCP listener on the C2 port, standing in for
+# the box an implant would beacon to. It accepts the connection so the beacon
+# "succeeds", but the detection does not depend on it - tcp_connect fires on the
+# initiating side the moment the socket connects.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: collector
+  namespace: lab
+  labels:
+    app: collector
+spec:
+  serviceAccountName: collector
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: listener
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command:
+        - sh
+        - -c
+        - 'while true; do echo received | nc -l -p 4444 >/dev/null 2>&1; done'
+      resources:
+        requests:
+          cpu: "25m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector
+  namespace: lab
+spec:
+  selector:
+    app: collector
+  ports:
+    - port: 4444
+      targetPort: 4444
+---
+# The foothold: where the student's terminal attaches. Its own token is mounted
+# only so kubectl has plumbing; this lab is not about the API. There is no
+# planted RBAC flaw - the point is the beacon and its detection, not a privilege.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workstation
+  namespace: lab
+  labels:
+    app: workstation
+spec:
+  hostname: ebpf-egress
+  serviceAccountName: station
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: k8labs-foothold:1.31
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+---
+# ── Defender: the in-guest eBPF sensor (Tetragon) ──────────────────────────
+# Same wiring as modules/ebpf-detect.yaml (see it for the field-by-field
+# rationale on the DaemonSet): a Tetragon DaemonSet + an export-stdout sidecar in
+# the `tetragon` namespace, whose JSON event stream the Defender pane tails. Only
+# the TracingPolicy differs per lab. Here it hooks tcp_connect - a network kprobe,
+# not a file or credential one - and narrows to the C2 destination port so the
+# flag marks the student's beacon rather than the cluster's ambient connections.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tetragon
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tetragon
+  namespace: tetragon
+---
+# The detection policy. Hook tcp_connect(), the kernel function that initiates an
+# active TCP connection, and read its `sock` argument. Narrow to the C2 port with
+# a DPort selector so ambient traffic (DNS, the API server, the kubelet) does not
+# match - only a connection to :4444 posts, and the flag rides it as the event's
+# `message`, exactly as ebpf-detect's commit_creds flag does. tcp_connect fires
+# on the initiating side at connect time, so it is caught even if the collector
+# refuses and even after the beaconing process exits. Loaded from
+# --tracing-policy-dir (no operator/CRD needed in a single-tenant nested cluster).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-policies
+  namespace: tetragon
+data:
+  egress-beacon.yaml: |
+    apiVersion: cilium.io/v1alpha1
+    kind: TracingPolicy
+    metadata:
+      name: egress-beacon
+    spec:
+      kprobes:
+        - call: "tcp_connect"
+          syscall: false
+          message: "k8labs{ebpf_catches_the_c2_beacon_at_the_socket}"
+          args:
+            - index: 0
+              type: "sock"
+          selectors:
+            - matchArgs:
+                - index: 0
+                  operator: "DPort"
+                  values: ["4444"]
+              matchActions:
+                - action: Post
+                  rateLimit: "1s"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tetragon
+  namespace: tetragon
+  labels:
+    app: tetragon
+spec:
+  selector:
+    matchLabels:
+      app: tetragon
+  template:
+    metadata:
+      labels:
+        app: tetragon
+    spec:
+      serviceAccountName: tetragon
+      hostPID: true
+      containers:
+        - name: tetragon
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          securityContext:
+            privileged: true
+          command:
+            - sh
+            - -c
+            - |
+              mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+              mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+              mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+              exec /usr/bin/tetragon \
+                --enable-k8s-api=false \
+                --tracing-policy-dir=/etc/tetragon/tetragon.tp.d \
+                --export-filename=/var/run/cilium/tetragon/tetragon.log \
+                --server-address=unix:///var/run/tetragon/tetragon.sock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+            - name: export-log
+              mountPath: /var/run/cilium/tetragon
+            # subPath projects ONLY the policy file - see node-token-harvest.yaml
+            # for why a plain ConfigMap mount double-loads and kills the agent.
+            - name: tracing-policy
+              mountPath: /etc/tetragon/tetragon.tp.d/egress-beacon.yaml
+              subPath: egress-beacon.yaml
+              readOnly: true
+        - name: export-stdout
+          image: quay.io/cilium/tetragon:v1.7.0
+          imagePullPolicy: Never
+          command:
+            - tetra
+            - getevents
+            - -o
+            - json
+            - --server-address
+            - unix:///var/run/tetragon/tetragon.sock
+          volumeMounts:
+            - name: tetragon-run
+              mountPath: /var/run/tetragon
+      volumes:
+        - name: bpf-maps
+          emptyDir: {}
+        - name: tetragon-run
+          emptyDir: {}
+        - name: export-log
+          emptyDir: {}
+        - name: tracing-policy
+          configMap:
+            name: tetragon-policies

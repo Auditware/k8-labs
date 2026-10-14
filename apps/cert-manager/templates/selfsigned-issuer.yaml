@@ -1,0 +1,39 @@
+{{- if eq .Values.issuer.type "selfsigned" }}
+# Two-tier, same shape as a real ACME setup would be: a root of trust
+# (there, Let's Encrypt itself; here, a self-signed root we mint) issuing
+# through an intermediate that's what Ingress resources actually reference.
+# Nothing downstream (apps/backend's ingress.yaml, etc.) needs to know or
+# care which tier it's plugged into - see clusterIssuerName below, kept
+# identical between this file and acme-issuer.yaml on purpose.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ca-root
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: k8labs-local-ca
+  secretName: ca-root-secret
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.clusterIssuerName }}
+spec:
+  ca:
+    secretName: ca-root-secret
+{{- end }}

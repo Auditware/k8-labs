@@ -1,0 +1,203 @@
+image:
+  repository: ghcr.io/auditware/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# GHCR images are private by default. The pull secret is created out-of-band
+# (not in this chart, so the token never lands in git) and named here; empty
+# means "cluster can pull unauthenticated" (public images / local registry,
+# where Tilt leaves this unset). See docs/self-hosting.md.
+imagePullSecrets: []
+
+# Single System VM, no HA yet. Bump only once a
+# real uptime SLA exists.
+replicaCount: 1
+
+service:
+  port: 8080
+
+ingress:
+  enabled: true
+  host: k8labs.example.com   # prod host; Tilt overrides to localhost for local dev
+  path: /api
+  # Exact sub-paths, not a blanket /admin - that would also swallow the
+  # frontend's own client-side /admin route (see templates/ingress.yaml).
+  # /ui and /v1 are Vault's own hardcoded paths, not ours - see
+  # internal/api/routes.go's comment on why Vault is mounted at the paths
+  # it already expects instead of under /admin/vault like Grafana/ArgoCD.
+  adminPaths:
+    - /admin/grafana
+    - /admin/argocd
+    - /ui
+    - /v1
+  # Backend paths outside /api that any signed-in user may reach. Routed to the
+  # backend with the same security-headers middleware as /api, but WITHOUT the
+  # admin IP-allowlist.
+  #
+  # /swagger moved here from adminPaths: it used to be admin-only and
+  # IP-restricted, and is now requireAuth with the spec filtered per caller
+  # (internal/api/apidocs.go), so every signed-in user gets docs for their own
+  # access level. Leaving it in adminPaths would keep it IP-blocked for
+  # everyone off the admin IP. The admin *operations* stay requireAdmin-gated at
+  # the route and are stripped from a non-admin's copy of the spec.
+  #
+  # Note a path listed nowhere on either Ingress isn't routed to the backend at
+  # all - it falls through to the frontend and 404s.
+  userPaths:
+    - /swagger
+  pathType: Prefix
+  # Prod terminates TLS here via cert-manager. clusterIssuerName must match
+  # whatever apps/cert-manager's chart named its ClusterIssuer (default:
+  # "ca-issuer", same name for the local self-signed chain and the prod ACME
+  # chain - apps/cert-manager swaps only the issuer *type*, not its name).
+  # Tilt also sets this true locally to exercise issuance against the local
+  # self-signed CA. Ordering caveat for first prod deploy: ACME HTTP-01
+  # can't validate until DNS for `host` already points at this ingress -
+  # see docs/self-hosting.md.
+  tls:
+    enabled: true
+    clusterIssuerName: ca-issuer
+
+# Traefik middlewares (prod hardening). Disabled by default so local/k3d - which
+# shares the same Traefik - is unaffected; enabled in prod via the ArgoCD
+# Application helm.parameters. adminAllowCIDRs restricts the admin paths
+# (/admin/*, /ui, /v1) to specific source IPs; empty = no IP restriction (the
+# admin-auth 401 still applies). See templates/middlewares.yaml.
+traefikMiddleware:
+  enabled: false
+  adminAllowCIDRs: []
+  # 0 = use the direct peer IP (local/direct). Behind a proxy that sets
+  # X-Forwarded-For (Cloudflare), set to 1 so the allowlist matches the real
+  # visitor IP, not the proxy's edge IP.
+  adminAllowIPDepth: 0
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Hardened defaults for the real (distroless) image - Tilt overrides both
+# for its alpine-based dev image (Dockerfile.dev), which uses UID 100 and
+# needs a writable root fs for live_update's file sync. See Tiltfile.
+securityContext:
+  runAsUser: 65532
+  readOnlyRootFilesystem: true
+
+# Non-secret config - becomes a plain ConfigMap. Real values documented
+# alongside secrets/backend.env.prod.example.
+config:
+  logLevel: info
+  databaseHost: postgres.default.svc.cluster.local
+  databasePort: "5432"
+  databaseName: platform
+  databaseSslmode: disable
+  # See internal/labs/config.go. labsRuntimeClass empty = omit
+  # RuntimeClassName entirely (no Kata on k3d yet).
+  # "kata-fc" is the prod value - each session-runner pod runs in a
+  # Kata/Firecracker microVM (the RuntimeClass must already be installed on the
+  # labs node). Tilt overrides this to "" for local,
+  # since k3d has no Kata - runners run as plain privileged runc there.
+  labsRuntimeClass: kata-fc
+  # RuntimeClass for eBPF-opted modules (Module.EBPF) - a microVM whose guest
+  # kernel exposes BTF/kprobes/tracefs so students can run eBPF tooling inside
+  # their own lab (see docs/architecture/ebpf-per-session.md). Like labsRuntimeClass
+  # ("kata-fc"), this is a hard prereq on the labs node: the kata-fc-ebpf
+  # containerd handler + RuntimeClass must exist (infra/runtimeclass/kata-fc-ebpf.yaml
+  # + the node config in infra/cluster/kubeadm-2node.md) before an eBPF session is
+  # granted, or its runner pod is rejected (RuntimeClass not found) - a loud,
+  # correct failure, not a silent wrong-kernel one. Tilt overrides this to empty
+  # for local, where runc's host kernel already has BTF - no custom kernel needed.
+  labsRuntimeClassEbpf: kata-fc-ebpf
+  # RuntimeClasses for the kernel-driver research labs (Module.Kernel
+  # research-dev / -hard) - microVMs whose KASAN+KCOV+BTF guest kernel is the
+  # exploitation target (dev unhardened, hard with production mitigations). Same
+  # rules as labsRuntimeClassEbpf: empty locally (runc), and in prod the
+  # containerd handler + RuntimeClass must exist
+  # (infra/runtimeclass/kata-fc-research-{dev,hard}.yaml) and be allowlisted, or
+  # the runner pod is rejected. See docs/architecture/kasan-research-lab.md.
+  labsRuntimeClassResearchDev: kata-fc-research-dev
+  labsRuntimeClassResearchHard: kata-fc-research-hard
+  # See internal/labs/config.go's nodeSelectorMap. The bare-metal labs node
+  # group carries this label in prod; locally the dedicated k3d agent node
+  # carries the same one (Tilt sets it too). Same value both environments.
+  labsNodeSelector: k8labs.io/role=labs
+  # Every session provisions a session-runner pod that boots a throwaway k3s
+  # cluster - see internal/labs/runner.go and
+  # docs/architecture/nested-lab-rewrite.md. labsRunnerNamespace must exist at
+  # PodSecurity "privileged" (the runner is privileged/high-capability - see
+  # apps/labs). labsRunnerImage is the session-runner image (services/session-
+  # runner); Tilt overrides it to the local registry.
+  labsRunnerNamespace: labs-runners
+  labsRunnerImage: ghcr.io/auditware/session-runner:latest
+  # Redirect_uri allowlist for OAuth callbacks (see internal/accounts/redirect.go)
+  # - localhost:7373/:5173/:8080 are always allowed regardless, this is the
+  # extra one for wherever the frontend actually lives. Tilt overrides for local.
+  corsOrigin: https://k8labs.example.com
+  # LOCAL DEV ONLY. When "1", the backend mounts a username/password login route
+  # (internal/api/devlogin.go) for localhost testing without OAuth. MUST stay ""
+  # in prod: OAuth-only is the deliberate auth path and this bypasses it. Tilt
+  # overrides this to "1" for k3d; ArgoCD/prod uses this default ("") so the
+  # route is never even registered there.
+  devLogin: ""
+
+# Vault Agent Injector - see docs/architecture/environments.md and
+# secrets/README.md. secretTemplate is a Vault consul-template string
+# (its own {{ }} syntax, distinct from Helm's) - it lives here as a plain
+# YAML string value, never re-parsed by Helm, so no escaping is needed.
+# The annotation that consumes it (templates/deployment.yaml) does a
+# single {{ .Values... }} substitution, not a second template pass.
+#
+# Plain KEY=value lines, not shell `export` syntax - nothing sources this
+# as shell (the image is distroless, no shell to do it with). The Go app
+# parses this file directly at startup, see internal/config/vault.go.
+#
+# vault.enabled: false is the local/k3d path - Vault itself isn't installed
+# there yet, so templates/secret.yaml renders a
+# plain Secret from localSecret.* instead and the Vault annotations/envFrom
+# are skipped entirely. Real environments leave this true.
+vault:
+  enabled: true
+  role: backend
+  secretPath: secret/data/backend
+  secretTemplate: |
+    {{- with secret "secret/data/backend" -}}
+    DATABASE_USER={{ .Data.data.database_user }}
+    DATABASE_PASSWORD={{ .Data.data.database_password }}
+    JWT_SIGNING_KEY={{ .Data.data.jwt_signing_key }}
+    GOOGLE_CLIENT_ID={{ .Data.data.google_client_id }}
+    GOOGLE_CLIENT_SECRET={{ .Data.data.google_client_secret }}
+    GITHUB_CLIENT_ID={{ .Data.data.github_client_id }}
+    GITHUB_CLIENT_SECRET={{ .Data.data.github_client_secret }}
+    ADMIN_EMAILS={{ if .Data.data.admin_emails }}{{ .Data.data.admin_emails }}{{ end }}
+    ENTRANCE_TOKEN={{ if .Data.data.entrance_token }}{{ .Data.data.entrance_token }}{{ end }}
+    {{- end -}}
+
+# databaseUser..githubClientSecret only read when vault.enabled is false
+# (templates/secret.yaml). Placeholders - real values come from
+# secrets/backend.env via --set at install time, never committed here
+# (this file is not gitignored). See secrets/README.md.
+localSecret:
+  databaseUser: backend
+  databasePassword: devpassword
+  jwtSigningKey: dev-only-insecure-key-change-me
+  googleClientId: ""
+  googleClientSecret: ""
+  githubClientId: ""
+  githubClientSecret: ""
+  # OAuth admin allowlist (ADMIN_EMAILS) - see internal/accounts.Config.
+  # Empty here on purpose: a hardcoded admin email would be a backdoor in
+  # anyone else's install of this chart. Real environments set it through
+  # Vault (secretTemplate above); local dev passes it via --set from
+  # secrets/backend.env (see Tiltfile).
+  adminEmails: ""
+  # Earlybird self-service gate (ENTRANCE_TOKEN) - see internal/accounts.Config.
+  # Empty on purpose, same reasoning as adminEmails: a token baked into the chart
+  # would be a shared backdoor across every install. Empty = self-service closed
+  # (only an admin can grant labs). Real environments set it through Vault
+  # (entrance_token in secretTemplate above); this field is only the non-Vault /
+  # local path.
+  entranceToken: ""
+

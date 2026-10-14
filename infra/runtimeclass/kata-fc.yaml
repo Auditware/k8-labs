@@ -1,0 +1,47 @@
+# The RuntimeClass the backend pins lab pods to in prod (see
+# apps/backend/values.yaml config.labsRuntimeClass="kata-fc"). Each lab pod
+# scheduled with runtimeClassName: kata-fc runs inside a Kata Containers +
+# Firecracker microVM with its own kernel - the isolation boundary between
+# tenants that plain runc (local/k3d) cannot provide.
+#
+# Prereqs on the labs node before this resolves (see infra/cluster/README.md):
+#   - the bare-metal node is labelled k8labs.io/role=labs (matches
+#     config.labsNodeSelector) and carries the kata handler in its
+#     containerd config (kata-deploy installs this).
+#   - nested/hardware virtualization available (bare metal - not the cloud
+#     control-plane nodes, which stay plain runc).
+#
+# handler must match the containerd runtime handler name kata-deploy
+# registers for the Firecracker hypervisor; "kata-fc" is the conventional
+# name for that variant. Apply this to the workload cluster after the labs
+# node joins, not as part of the cluster bootstrap itself.
+#
+# Deliberately NO spec.overhead here, which is worth explaining because its
+# absence looks like an oversight.
+#
+# overhead.podFixed exists to tell the scheduler about sandbox memory that is
+# not charged to the container. We do not use it because labs.SessionMemory
+# already reserves the FULL measured session cost - microVM included - as the
+# pod's memory request, and the request equals the limit. Measured on this node
+# 2026-07-23: a normal session's Firecracker VM is 1049 MiB of its 1.08 GiB
+# total. Declaring that same VM again as overhead would double-charge every
+# session and cut node capacity from ~40 to ~28 for nothing real.
+#
+# Measurement also indicates the pod's memory limit is what sizes guest RAM (a
+# 2Gi-limit pod produced a 1049 MiB VM, a 3Gi-limit pod 1929 MiB - RSS tracked
+# the limit), which is what makes request=limit an actual OOM bound rather than
+# a hopeful one.
+#
+# The one thing that would legitimately belong in overhead is the VMM's own
+# bookkeeping (the Firecracker process and its page tables) as distinct from
+# guest RAM. That was never isolated - only total VM RSS was measured - so
+# setting it now would be inventing a number. If you want it, measure a runner
+# with a deliberately tiny limit first and use the floor you observe.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc
+handler: kata-fc
+scheduling:
+  nodeSelector:
+    k8labs.io/role: labs
